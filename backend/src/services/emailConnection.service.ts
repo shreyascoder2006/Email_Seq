@@ -1,0 +1,359 @@
+import nodemailer from 'nodemailer';
+import { Types } from 'mongoose';
+import { EmailConnection, IEmailConnection, ConnectionStatus } from '../models/EmailConnection';
+import { encrypt, decrypt } from '../utils/crypto';
+import { AppError } from '../utils/AppError';
+import logger from '../config/logger';
+import {
+  CreateEmailConnectionDto,
+  UpdateEmailConnectionDto,
+} from '../validators/emailConnection.validator';
+
+// ─── Types ─────────────────────────────────────────────────────────
+
+/** Safe version of IEmailConnection — never includes raw passwords */
+export type SafeEmailConnection = Omit<
+  IEmailConnection,
+  'smtp_password_enc' | 'imap_password_enc'
+> & {
+  has_imap: boolean;
+};
+
+export interface SmtpTestResult {
+  success: boolean;
+  message: string;
+  latency_ms?: number;
+}
+
+export interface ImapTestResult {
+  success: boolean;
+  message: string;
+}
+
+export interface ConnectionTestResult {
+  smtp: SmtpTestResult;
+  imap?: ImapTestResult;
+}
+
+// ─── Sanitizer — strip encrypted password fields from output ───────
+function sanitize(doc: IEmailConnection): SafeEmailConnection {
+  const obj = doc.toObject({ virtuals: false }) as Record<string, unknown>;
+
+  delete obj.smtp_password_enc;
+  delete obj.imap_password_enc;
+
+  return {
+    ...obj,
+    has_imap: !!(doc.imap_host && doc.imap_username),
+  } as SafeEmailConnection;
+}
+
+// ─── Service ───────────────────────────────────────────────────────
+export class EmailConnectionService {
+
+  // ── CREATE ────────────────────────────────────────────────────────
+  async create(
+    userId: string,
+    dto: CreateEmailConnectionDto
+  ): Promise<SafeEmailConnection> {
+    // Check for duplicate from_email per user
+    const existing = await EmailConnection.findOne({
+      user_id: userId,
+      from_email: dto.from_email.toLowerCase(),
+    });
+    if (existing) {
+      throw AppError.conflict(
+        `An email account with address "${dto.from_email}" already exists`
+      );
+    }
+
+    const doc = new EmailConnection({
+      user_id:           new Types.ObjectId(userId),
+      label:             dto.label,
+      from_name:         dto.from_name,
+      from_email:        dto.from_email.toLowerCase(),
+      reply_to:          dto.reply_to,
+      provider:          dto.provider,
+
+      // SMTP
+      smtp_host:         dto.smtp_host,
+      smtp_port:         dto.smtp_port,
+      smtp_encryption:   dto.smtp_encryption,
+      smtp_username:     dto.smtp_username,
+      smtp_password_enc: encrypt(dto.smtp_password.replace(/\s+/g, '')),
+
+      // IMAP (optional)
+      imap_host:         dto.imap_host         || undefined,
+      imap_port:         dto.imap_port         || undefined,
+      imap_encryption:   dto.imap_encryption   || undefined,
+      imap_username:     dto.imap_username      || undefined,
+      imap_password_enc: dto.imap_password
+        ? encrypt(dto.imap_password.replace(/\s+/g, ''))
+        : undefined,
+
+      daily_limit:           dto.daily_limit,
+      hourly_limit:          dto.hourly_limit,
+      min_interval_seconds:  dto.min_interval_seconds,
+
+      status: ConnectionStatus.PENDING,
+    });
+
+    await doc.save();
+
+    logger.info('EmailConnection created', {
+      connectionId: doc._id,
+      userId,
+      from_email: dto.from_email,
+    });
+
+    return sanitize(doc);
+  }
+
+  // ── LIST (user's connections) ─────────────────────────────────────
+  async findAll(userId: string): Promise<SafeEmailConnection[]> {
+    const docs = await EmailConnection.find({ user_id: userId })
+      .sort({ created_at: -1 })
+      .lean<IEmailConnection[]>();
+
+    // lean() returns plain objects — strip manually
+    return docs.map((doc) => {
+      const { smtp_password_enc, imap_password_enc, ...safe } = doc as any;
+      return { ...safe, has_imap: !!(doc.imap_host && doc.imap_username) };
+    });
+  }
+
+  // ── GET ONE ───────────────────────────────────────────────────────
+  async findById(
+    userId: string,
+    connectionId: string
+  ): Promise<SafeEmailConnection> {
+    const doc = await EmailConnection.findOne({
+      _id: connectionId,
+      user_id: userId,
+    });
+
+    if (!doc) {
+      throw AppError.notFound('Email connection');
+    }
+
+    return sanitize(doc);
+  }
+
+  // ── UPDATE ────────────────────────────────────────────────────────
+  async update(
+    userId: string,
+    connectionId: string,
+    dto: UpdateEmailConnectionDto
+  ): Promise<SafeEmailConnection> {
+    const doc = await EmailConnection.findOne({
+      _id: connectionId,
+      user_id: userId,
+    });
+
+    if (!doc) throw AppError.notFound('Email connection');
+
+    // Apply updates
+    if (dto.label)      doc.label      = dto.label;
+    if (dto.from_name)  doc.from_name  = dto.from_name;
+    if (dto.from_email) doc.from_email = dto.from_email.toLowerCase();
+    if (dto.reply_to !== undefined) doc.reply_to = dto.reply_to ?? undefined;
+    if (dto.provider)   doc.provider   = dto.provider;
+
+    if (dto.smtp_host)       doc.smtp_host       = dto.smtp_host;
+    if (dto.smtp_port)       doc.smtp_port       = dto.smtp_port;
+    if (dto.smtp_encryption) doc.smtp_encryption = dto.smtp_encryption;
+    if (dto.smtp_username)   doc.smtp_username   = dto.smtp_username;
+
+    // Only re-encrypt password if a new one is provided
+    if (dto.smtp_password) {
+      doc.smtp_password_enc = encrypt(dto.smtp_password.replace(/\s+/g, ''));
+      // Mark as pending re-verification after password change
+      doc.status = ConnectionStatus.PENDING;
+    }
+
+    if (dto.imap_host !== undefined)  doc.imap_host     = dto.imap_host ?? undefined;
+    if (dto.imap_port)                doc.imap_port     = dto.imap_port;
+    if (dto.imap_encryption)          doc.imap_encryption = dto.imap_encryption;
+    if (dto.imap_username !== undefined) doc.imap_username = dto.imap_username ?? undefined;
+
+    if (dto.imap_password !== undefined && dto.imap_password !== null) {
+      doc.imap_password_enc = encrypt(dto.imap_password.replace(/\s+/g, ''));
+    } else if (dto.imap_password === null) {
+      doc.imap_password_enc = undefined;
+    }
+
+    if (dto.daily_limit !== undefined)          doc.daily_limit           = dto.daily_limit;
+    if (dto.hourly_limit !== undefined)         doc.hourly_limit          = dto.hourly_limit;
+    if (dto.min_interval_seconds !== undefined) doc.min_interval_seconds  = dto.min_interval_seconds;
+
+    await doc.save();
+
+    logger.info('EmailConnection updated', { connectionId, userId });
+
+    return sanitize(doc);
+  }
+
+  // ── DELETE ────────────────────────────────────────────────────────
+  async delete(userId: string, connectionId: string): Promise<void> {
+    const result = await EmailConnection.deleteOne({
+      _id: connectionId,
+      user_id: userId,
+    });
+
+    if (result.deletedCount === 0) {
+      throw AppError.notFound('Email connection');
+    }
+
+    logger.info('EmailConnection deleted', { connectionId, userId });
+  }
+
+  // ── TEST CONNECTION ───────────────────────────────────────────────
+  async testConnection(
+    userId: string,
+    connectionId: string,
+    testImap = false
+  ): Promise<ConnectionTestResult> {
+    const doc = await EmailConnection.findOne({
+      _id: connectionId,
+      user_id: userId,
+    });
+
+    if (!doc) throw AppError.notFound('Email connection');
+
+    const result: ConnectionTestResult = {
+      smtp: await this._testSmtp(doc),
+    };
+
+    if (testImap && doc.imap_host && doc.imap_password_enc) {
+      result.imap = await this._testImap(doc);
+    }
+
+    // Update status & timestamp based on result
+    const smtpOk = result.smtp.success;
+    const imapOk = !testImap || !result.imap || result.imap.success;
+
+    doc.status            = smtpOk && imapOk
+      ? ConnectionStatus.ACTIVE
+      : ConnectionStatus.FAILED;
+    doc.failure_reason    = smtpOk && imapOk
+      ? undefined
+      : result.smtp.message || result.imap?.message;
+    doc.last_verified_at  = new Date();
+
+    await doc.save();
+
+    logger.info('EmailConnection test complete', {
+      connectionId,
+      smtpOk,
+      imapOk,
+      status: doc.status,
+    });
+
+    return result;
+  }
+
+  // ── Private: SMTP test ────────────────────────────────────────────
+  private async _testSmtp(doc: IEmailConnection): Promise<SmtpTestResult> {
+    const start = Date.now();
+    try {
+      const rawPassword = decrypt(doc.smtp_password_enc);
+      const transport = nodemailer.createTransport({
+        host: doc.smtp_host,
+        port: doc.smtp_port,
+        secure: doc.smtp_encryption === 'ssl',
+        auth: {
+          user: doc.smtp_username,
+          pass: rawPassword,
+        },
+        connectionTimeout: 10_000,
+        greetingTimeout:   8_000,
+      });
+
+      await transport.verify();
+      transport.close();
+
+      return {
+        success: true,
+        message: `SMTP connection to ${doc.smtp_host}:${doc.smtp_port} verified`,
+        latency_ms: Date.now() - start,
+      };
+    } catch (err) {
+      const error = err as Error;
+      logger.warn('SMTP test failed', {
+        host: doc.smtp_host,
+        error: error.message,
+      });
+      return {
+        success: false,
+        message: `SMTP failed: ${error.message}`,
+        latency_ms: Date.now() - start,
+      };
+    }
+  }
+
+  // ── Private: IMAP test (basic TCP connect + greeting) ─────────────
+  private async _testImap(doc: IEmailConnection): Promise<ImapTestResult> {
+    return new Promise((resolve) => {
+      const net   = require('net') as typeof import('net');
+      const tls   = require('tls') as typeof import('tls');
+
+      const host = doc.imap_host!;
+      const port = doc.imap_port ?? 993;
+      const useSSL = (doc.imap_encryption ?? 'ssl') !== 'none';
+
+      let responded = false;
+      const timeout = setTimeout(() => {
+        if (!responded) {
+          responded = true;
+          resolve({ success: false, message: `IMAP timeout connecting to ${host}:${port}` });
+        }
+      }, 10_000);
+
+      const onConnect = () => {
+        clearTimeout(timeout);
+        if (!responded) {
+          responded = true;
+          resolve({ success: true, message: `IMAP connection to ${host}:${port} successful` });
+        }
+        socket.destroy();
+      };
+
+      const onError = (err: Error) => {
+        clearTimeout(timeout);
+        if (!responded) {
+          responded = true;
+          resolve({ success: false, message: `IMAP failed: ${err.message}` });
+        }
+      };
+
+      const socket = useSSL
+        ? tls.connect({ host, port, rejectUnauthorized: false }, onConnect)
+        : net.connect({ host, port }, onConnect);
+
+      socket.on('error', onError);
+    });
+  }
+
+  // ── GET decrypted credentials (internal use only — NOT exposed via API) ─
+  async getDecryptedCredentials(
+    userId: string,
+    connectionId: string
+  ): Promise<{ smtpPassword: string; imapPassword?: string }> {
+    const doc = await EmailConnection.findOne({
+      _id: connectionId,
+      user_id: userId,
+    });
+
+    if (!doc) throw AppError.notFound('Email connection');
+
+    return {
+      smtpPassword: decrypt(doc.smtp_password_enc),
+      imapPassword: doc.imap_password_enc
+        ? decrypt(doc.imap_password_enc)
+        : undefined,
+    };
+  }
+}
+
+// Singleton export
+export const emailConnectionService = new EmailConnectionService();
