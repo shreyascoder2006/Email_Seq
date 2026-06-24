@@ -4,7 +4,7 @@ import { ProtectedRoute } from './components/ProtectedRoute';
 import { Login } from './pages/Login';
 import { Dashboard } from './pages/Dashboard';
 import { Sequences } from './pages/Sequences';
-import { CreateSequenceWizard } from './pages/CreateSequenceWizard';
+
 // import { SequenceBuilder } from './pages/SequenceBuilder'; // Legacy - removed for Route Consolidation
 import { SequenceBuilderWizard } from './pages/SequenceBuilderWizard';
 import { Templates } from './pages/Templates';

@@ -22,8 +22,8 @@ export const sequenceService = {
     limit?: number;
     search?: string;
     status?: string;
-  }): Promise<PaginatedResponse<Sequence>> => {
-    const response = await api.get('/sequences', { params });
+  }, signal?: AbortSignal): Promise<PaginatedResponse<Sequence>> => {
+    const response = await api.get('/sequences', { params, signal });
     const payload = response.data;
     return {
       data: payload.data || [],

@@ -50,4 +50,9 @@ export const enrollmentService = {
     const response = await api.patch(`/sequences/${sequenceId}/contacts/resume`, { contactIds });
     return response.data;
   },
+
+  bulkSkip: async (sequenceId: string, contactIds: string[]) => {
+    const response = await api.patch(`/sequences/${sequenceId}/contacts/skip`, { contactIds });
+    return response.data;
+  },
 };

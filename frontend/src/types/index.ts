@@ -91,6 +91,7 @@ export interface Sequence {
   stats: {
     total_contacts: number;
     active_contacts: number;
+    paused_contacts: number;
     total_sent: number;
     total_opens: number;
     total_clicks: number;

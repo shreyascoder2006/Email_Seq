@@ -4,8 +4,8 @@ import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import {
-  X, Zap, Calendar as CalendarIcon, Clock, Info,
-  CheckCircle2, Globe, TrendingUp
+  X, Zap, Calendar as CalendarIcon, Clock, Globe, ArrowRight,
+  ChevronUp, ChevronDown, Info, Send
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { sequenceService } from '../../services/sequence.service';
@@ -13,7 +13,7 @@ import { calculateNextValidSlot, getLocalParts, type SendingWindow } from '@emai
 import { useAuthStore } from '../../store/useAuthStore';
 import { LoadingSpinner } from '../ui/LoadingSpinner';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const DAYS = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 
@@ -39,14 +39,10 @@ const wizardSchema = z.object({
 
 type WizardData = z.infer<typeof wizardSchema>;
 
-// ─── Props ────────────────────────────────────────────────────────────────────
-
 interface CreateSequenceModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function formatTime(h: number, m: number) {
   const hour = h === 0 ? 12 : h > 12 ? h - 12 : h;
@@ -76,6 +72,35 @@ const timeOptions = Array.from({ length: 48 }).map((_, i) => {
     label: formatTime(hour, minute),
   };
 });
+
+// ─── Reusable Field Label ─────────────────────────────────────────────────────
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return <p className="text-[13px] font-bold text-gray-900 mb-3">{children}</p>;
+}
+
+// ─── Dropdown Select ──────────────────────────────────────────────────────────
+
+function SelectField({ icon: Icon, children, ...props }: React.SelectHTMLAttributes<HTMLSelectElement> & { icon?: React.FC<any> }) {
+  return (
+    <div className="relative">
+      {Icon && (
+        <div className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
+          <Icon className="w-4 h-4" />
+        </div>
+      )}
+      <select
+        {...props}
+        className={`w-full ${Icon ? 'pl-9' : 'pl-3.5'} pr-9 py-2.5 border border-gray-200 rounded-xl text-[13px] text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 appearance-none bg-white cursor-pointer`}
+      >
+        {children}
+      </select>
+      <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
+        <ChevronDown className="w-4 h-4" />
+      </div>
+    </div>
+  );
+}
 
 // ─── Modal ────────────────────────────────────────────────────────────────────
 
@@ -109,14 +134,14 @@ export const CreateSequenceModal: React.FC<CreateSequenceModalProps> = ({ isOpen
     mode: 'onTouched',
   });
 
-  const nameValue = watch('name') || '';
+  const nameValue         = watch('name') || '';
   const sendingPreference = watch('sending_preference');
-  const customDays = watch('custom_days') || [];
-  const startTimeStr = watch('start_time_str') || '9:00';
-  const endTimeStr = watch('end_time_str') || '17:00';
-  const timezone = watch('timezone');
-  const launchDate = watch('launch_date');
-  const dailyLimit = watch('daily_sending_limit');
+  const customDays        = watch('custom_days') || [];
+  const startTimeStr      = watch('start_time_str') || '9:00';
+  const endTimeStr        = watch('end_time_str') || '17:00';
+  const timezone          = watch('timezone');
+  const launchDate        = watch('launch_date');
+  const dailyLimit        = watch('daily_sending_limit');
 
   // Compute next slot preview
   useEffect(() => {
@@ -132,13 +157,12 @@ export const CreateSequenceModal: React.FC<CreateSequenceModalProps> = ({ isOpen
       const nowParts = getLocalParts(new Date(), timezone);
       const isToday = parts.year === nowParts.year && parts.month === nowParts.month && parts.day === nowParts.day;
       const dateStr = isToday ? 'Today' : nextDate.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
-      setNextSlot(`${dateStr} · ${formatTime(parts.hour, parts.minute)}`);
+      setNextSlot(`${dateStr} • ${formatTime(parts.hour, parts.minute)} – ${formatTime(eH, eM)} IST`);
     } catch {
       setNextSlot('');
     }
   }, [customDays, launchDate, timezone, startTimeStr, endTimeStr]);
 
-  // Close on Escape
   useEffect(() => {
     if (!isOpen) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') handleClose(); };
@@ -146,16 +170,12 @@ export const CreateSequenceModal: React.FC<CreateSequenceModalProps> = ({ isOpen
     return () => document.removeEventListener('keydown', onKey);
   }, [isOpen]);
 
-  // Prevent body scroll
   useEffect(() => {
     document.body.style.overflow = isOpen ? 'hidden' : '';
     return () => { document.body.style.overflow = ''; };
   }, [isOpen]);
 
-  const handleClose = () => {
-    reset();
-    onClose();
-  };
+  const handleClose = () => { reset(); onClose(); };
 
   const onSubmit = async (data: WizardData) => {
     setIsSubmitting(true);
@@ -164,7 +184,7 @@ export const CreateSequenceModal: React.FC<CreateSequenceModalProps> = ({ isOpen
         ? new Date().toISOString()
         : new Date(data.launch_date).toISOString();
       const [start_hour, start_minute] = data.start_time_str.split(':').map(Number);
-      const [end_hour, end_minute] = data.end_time_str.split(':').map(Number);
+      const [end_hour, end_minute]     = data.end_time_str.split(':').map(Number);
 
       const newSequence = await sequenceService.create({
         name: data.name,
@@ -189,68 +209,60 @@ export const CreateSequenceModal: React.FC<CreateSequenceModalProps> = ({ isOpen
     }
   };
 
-  // Formatted summary values
-  const [sH, sM] = startTimeStr.split(':').map(Number);
-  const [eH, eM] = endTimeStr.split(':').map(Number);
-  const activeDayNames = customDays.sort((a, b) => a - b).map(d => DAYS[d]).join(', ');
-  const tzLabel = TIMEZONES.find(t => t.value === timezone)?.label ?? timezone;
-
   if (!isOpen) return null;
+
+  const tzLabel = TIMEZONES.find(t => t.value === timezone)?.label?.match(/\(([^)]+)\)/)?.[1] ?? '';
 
   return (
     <div
       ref={backdropRef}
-      className="fixed inset-0 z-[300] flex items-center justify-center p-4"
-      style={{ background: 'rgba(0,0,0,0.40)', backdropFilter: 'blur(4px)' }}
+      className="fixed inset-0 z-[300] flex items-center justify-center"
+      style={{ background: 'rgba(0,0,0,0.45)' }}
       onClick={(e) => { if (e.target === backdropRef.current) handleClose(); }}
     >
-      {/* Modal */}
+      {/* Modal shell */}
       <div
-        className="bg-white rounded-2xl shadow-2xl w-full flex flex-col"
-        style={{ maxWidth: 960, maxHeight: '90vh' }}
+        className="bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+        style={{ width: 580, maxHeight: '94vh' }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* ── Header ── */}
-        <div className="flex items-start justify-between px-7 pt-6 pb-5 border-b border-gray-100 shrink-0">
-          <div>
-            <h2 className="text-xl font-bold text-gray-900 tracking-tight">Create New Sequence</h2>
-            <p className="text-sm text-gray-500 mt-0.5">Configure your outreach schedule</p>
+
+          {/* Header */}
+          <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-gray-100 shrink-0">
+            <div>
+              <h2 className="text-[18px] font-bold text-gray-900 leading-tight">New Sequence Setup</h2>
+            </div>
+            <button
+              onClick={handleClose}
+              className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
           </div>
-          <button
-            onClick={handleClose}
-            className="p-2 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
 
-        {/* ── Body ── */}
-        <div className="overflow-y-auto flex-1 px-7 py-6">
-          <form id="create-seq-form" onSubmit={handleSubmit(onSubmit)}>
-            <div className="grid grid-cols-[1fr_260px] gap-6">
-
-              {/* ─── Left Column ─────────────────────────────────── */}
+          {/* Scrollable body */}
+          <div className="overflow-y-auto flex-1 px-6 py-5">
+            <form id="create-seq-form" onSubmit={handleSubmit(onSubmit)}>
               <div className="space-y-6">
 
-                {/* 1. Name */}
+                {/* 1. Sequence Title */}
                 <div>
-                  <label className="block text-sm font-semibold text-gray-800 mb-1.5">
-                    Sequence Name <span className="text-red-400">*</span>
-                  </label>
+                  <SectionLabel>Sequence Title</SectionLabel>
                   <div className="relative">
+                    <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-300 pointer-events-none">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                    </div>
                     <input
                       type="text"
                       maxLength={50}
-                      placeholder="e.g. New Product Outreach"
-                      className={`w-full px-4 py-2.5 border rounded-xl text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 transition-all ${
-                        errors.name
-                          ? 'border-red-300 focus:ring-red-500'
-                          : 'border-gray-200 focus:ring-indigo-500 focus:border-indigo-500'
+                      placeholder="Type sequence title here..."
+                      className={`w-full pl-10 pr-16 py-2.5 border rounded-xl text-[13px] text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 transition-all ${
+                        errors.name ? 'border-red-300 focus:ring-red-400' : 'border-gray-200 focus:ring-indigo-500 focus:border-indigo-400'
                       }`}
                       {...register('name')}
                     />
-                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 pointer-events-none">
-                      {nameValue.length} / 50
+                    <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[11px] text-gray-400 pointer-events-none">
+                      {nameValue.length} / 50 characters
                     </span>
                   </div>
                   {errors.name && <p className="text-xs text-red-500 mt-1">{errors.name.message}</p>}
@@ -258,68 +270,71 @@ export const CreateSequenceModal: React.FC<CreateSequenceModalProps> = ({ isOpen
 
                 {/* 2. Sending Preference */}
                 <div>
-                  <p className="text-sm font-semibold text-gray-800 mb-2">Sending Preference</p>
+                  <SectionLabel>Sending Preference</SectionLabel>
                   <div className="grid grid-cols-2 gap-3">
+
+                    {/* Send immediately */}
                     <label className={`relative flex items-start gap-3 p-4 rounded-xl border-2 cursor-pointer transition-all ${
                       sendingPreference === 'immediate'
-                        ? 'border-indigo-500 bg-indigo-50'
+                        ? 'border-[#5B4CFF] bg-[#F7F6FF]'
                         : 'border-gray-200 bg-white hover:border-gray-300'
                     }`}>
                       <input type="radio" value="immediate" className="sr-only" {...register('sending_preference')} />
-                      <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
-                        sendingPreference === 'immediate' ? 'bg-indigo-100' : 'bg-gray-100'
+                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${
+                        sendingPreference === 'immediate' ? 'bg-[#EDE9FF]' : 'bg-gray-100'
                       }`}>
-                        <Zap className={`w-4.5 h-4.5 ${sendingPreference === 'immediate' ? 'text-indigo-600' : 'text-gray-400'}`} />
+                        <Zap className={`w-4 h-4 ${sendingPreference === 'immediate' ? 'text-[#5B4CFF]' : 'text-gray-400'}`} />
                       </div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-semibold text-gray-900">Send Immediately</span>
-                          <span className="text-[10px] font-bold tracking-wide text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded-full uppercase">Recommended</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-[13px] font-bold text-gray-900">Send immediately</span>
+                          <span className="text-[10px] font-bold tracking-wide text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">Recommended</span>
                         </div>
-                        <p className="text-xs text-gray-500 mt-0.5 leading-snug">Starts in next available slot</p>
+                        <p className="text-[11.5px] text-gray-500 mt-1 leading-snug">We'll send your emails in the next available time slot based on your sending window.</p>
                       </div>
-                      {sendingPreference === 'immediate' && (
-                        <CheckCircle2 className="w-4 h-4 text-indigo-500 absolute top-3 right-3" />
-                      )}
                     </label>
 
+                    {/* Schedule later */}
                     <label className={`relative flex items-start gap-3 p-4 rounded-xl border-2 cursor-pointer transition-all ${
                       sendingPreference === 'scheduled'
-                        ? 'border-indigo-500 bg-indigo-50'
+                        ? 'border-[#5B4CFF] bg-[#F7F6FF]'
                         : 'border-gray-200 bg-white hover:border-gray-300'
                     }`}>
                       <input type="radio" value="scheduled" className="sr-only" {...register('sending_preference')} />
-                      <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
-                        sendingPreference === 'scheduled' ? 'bg-indigo-100' : 'bg-gray-100'
+                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${
+                        sendingPreference === 'scheduled' ? 'bg-[#EDE9FF]' : 'bg-gray-100'
                       }`}>
-                        <CalendarIcon className={`w-4.5 h-4.5 ${sendingPreference === 'scheduled' ? 'text-indigo-600' : 'text-gray-400'}`} />
+                        <CalendarIcon className={`w-4 h-4 ${sendingPreference === 'scheduled' ? 'text-[#5B4CFF]' : 'text-gray-400'}`} />
                       </div>
                       <div>
-                        <span className="text-sm font-semibold text-gray-900">Schedule Later</span>
-                        <p className="text-xs text-gray-500 mt-0.5 leading-snug">Choose a future start date</p>
+                        <span className="text-[13px] font-bold text-gray-900">Schedule later according to calendar</span>
+                        <p className="text-[11.5px] text-gray-500 mt-1 leading-snug">We'll follow your selected days and time window strictly.</p>
                       </div>
-                      {sendingPreference === 'scheduled' && (
-                        <CheckCircle2 className="w-4 h-4 text-indigo-500 absolute top-3 right-3" />
-                      )}
                     </label>
                   </div>
 
-                  {/* Next slot chip */}
-                  {sendingPreference === 'immediate' && nextSlot && (
-                    <div className="mt-2.5 flex items-center gap-2 text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
-                      <span className="font-medium">Next slot:</span>
-                      <span>{nextSlot}</span>
+                  {/* Next Available Slot */}
+                  {nextSlot && (
+                    <div className="mt-3 flex items-center justify-between px-4 py-2.5 bg-white border border-gray-200 rounded-xl">
+                      <div className="flex items-center gap-2 text-[12.5px] text-gray-700 font-medium">
+                        <Info className="w-3.5 h-3.5 text-gray-400" />
+                        <span className="font-semibold text-gray-700">Next Available Slot</span>
+                        <span className="flex items-center gap-1.5 text-emerald-600 font-bold ml-1">
+                          <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full inline-block" />
+                          {nextSlot}
+                        </span>
+                      </div>
+                      <ArrowRight className="w-4 h-4 text-gray-400 shrink-0" />
                     </div>
                   )}
 
-                  {/* Scheduled: date picker */}
+                  {/* Scheduled date picker */}
                   {sendingPreference === 'scheduled' && (
                     <div className="mt-3">
-                      <label className="block text-xs font-semibold text-gray-700 mb-1">Start Date</label>
+                      <label className="block text-xs font-semibold text-gray-700 mb-1.5">Start Date</label>
                       <input
                         type="date"
-                        className="w-full px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        className="w-full px-3.5 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                         {...register('launch_date')}
                       />
                       {errors.launch_date && <p className="text-xs text-red-500 mt-1">{errors.launch_date.message}</p>}
@@ -329,9 +344,12 @@ export const CreateSequenceModal: React.FC<CreateSequenceModalProps> = ({ isOpen
 
                 {/* 3. Active Days */}
                 <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <p className="text-sm font-semibold text-gray-800">Active Days</p>
-                    <span className="text-xs text-gray-500">{customDays.length} day{customDays.length !== 1 ? 's' : ''} selected</span>
+                  <div className="flex items-center justify-between mb-3">
+                    <SectionLabel>Active Days</SectionLabel>
+                    <span className="text-[12px] text-emerald-600 font-semibold flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full inline-block" />
+                      {customDays.length} day(s) selected
+                    </span>
                   </div>
                   <Controller
                     name="custom_days"
@@ -350,10 +368,10 @@ export const CreateSequenceModal: React.FC<CreateSequenceModalProps> = ({ isOpen
                                   : [...field.value, idx].sort();
                                 field.onChange(next);
                               }}
-                              className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${
+                              className={`flex-1 py-2.5 rounded-xl text-[11px] font-extrabold tracking-wider transition-all border ${
                                 isSelected
-                                  ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-600/30'
-                                  : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                                  ? 'bg-[#5B4CFF] text-white border-[#5B4CFF] shadow-sm'
+                                  : 'bg-white text-gray-500 border-gray-200 hover:border-gray-300'
                               }`}
                             >
                               {day}
@@ -366,181 +384,124 @@ export const CreateSequenceModal: React.FC<CreateSequenceModalProps> = ({ isOpen
                   {errors.custom_days && <p className="text-xs text-red-500 mt-1">{errors.custom_days.message}</p>}
                 </div>
 
-                {/* 4. Schedule Settings (Timezone + Window) */}
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="col-span-1">
-                    <label className="block text-xs font-semibold text-gray-700 mb-1.5">
-                      <Globe className="w-3 h-3 inline mr-1 opacity-60" />
-                      Timezone
-                    </label>
-                    <div className="relative">
-                      <select
-                        {...register('timezone')}
-                        className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 appearance-none bg-white"
-                      >
-                        {TIMEZONES.map(tz => (
-                          <option key={tz.value} value={tz.value}>{tz.label}</option>
-                        ))}
-                      </select>
-                      <div className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                      </div>
-                    </div>
-                  </div>
-
+                {/* 4. Start Date + Timezone row */}
+                <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-semibold text-gray-700 mb-1.5">
-                      <Clock className="w-3 h-3 inline mr-1 opacity-60" />
-                      Start Time
-                    </label>
-                    <div className="relative">
-                      <select
-                        {...register('start_time_str')}
-                        className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 appearance-none bg-white"
-                      >
-                        {timeOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                      </select>
-                      <div className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                      </div>
-                    </div>
-                    {errors.start_time_str && <p className="text-xs text-red-500 mt-1">{errors.start_time_str.message}</p>}
+                    <label className="block text-[13px] font-bold text-gray-900 mb-2">Start Date</label>
+                    <SelectField icon={CalendarIcon} {...register('launch_date')}>
+                      <option value={new Date().toISOString().split('T')[0]}>
+                        {new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })} ({tzLabel || 'Local'})
+                      </option>
+                    </SelectField>
                   </div>
-
                   <div>
-                    <label className="block text-xs font-semibold text-gray-700 mb-1.5">
-                      <Clock className="w-3 h-3 inline mr-1 opacity-60" />
-                      End Time
-                    </label>
-                    <div className="relative">
-                      <select
-                        {...register('end_time_str')}
-                        className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 appearance-none bg-white"
-                      >
-                        {timeOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                      </select>
-                      <div className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                      </div>
-                    </div>
-                    {errors.end_time_str && <p className="text-xs text-red-500 mt-1">{errors.end_time_str.message}</p>}
+                    <label className="block text-[13px] font-bold text-gray-900 mb-2">Timezone</label>
+                    <SelectField icon={Globe} {...register('timezone')}>
+                      {TIMEZONES.map(tz => (
+                        <option key={tz.value} value={tz.value}>{tz.label}</option>
+                      ))}
+                    </SelectField>
                   </div>
                 </div>
 
-                {/* 5. Daily Cap */}
+                {/* 5. Time window row */}
                 <div>
-                  <label className="block text-sm font-semibold text-gray-800 mb-1">
-                    <TrendingUp className="w-3.5 h-3.5 inline mr-1 opacity-60" />
-                    Daily Execution Cap
-                  </label>
-                  <p className="text-xs text-gray-500 mb-2">Maximum emails sent per day across this sequence.</p>
-                  <input
-                    type="number"
-                    min={1}
-                    className={`w-48 px-4 py-2.5 border rounded-xl text-sm text-gray-900 focus:outline-none focus:ring-2 transition-all ${
-                      errors.daily_sending_limit ? 'border-red-300 focus:ring-red-500' : 'border-gray-200 focus:ring-indigo-500'
-                    }`}
-                    {...register('daily_sending_limit')}
-                  />
+                  <div className="grid grid-cols-[1fr_24px_1fr] items-end gap-2">
+                    <div>
+                      <label className="block text-[13px] font-bold text-gray-900 mb-2">Sequence Start Time</label>
+                      <SelectField icon={Clock} {...register('start_time_str')}>
+                        {timeOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                      </SelectField>
+                    </div>
+                    <div className="flex items-center justify-center pb-2.5">
+                      <ArrowRight className="w-4 h-4 text-gray-400" />
+                    </div>
+                    <div>
+                      <label className="block text-[13px] font-bold text-gray-900 mb-2">Sequence End Time</label>
+                      <SelectField icon={Clock} {...register('end_time_str')}>
+                        {timeOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                      </SelectField>
+                    </div>
+                  </div>
+                  {errors.start_time_str && <p className="text-xs text-red-500 mt-1">{errors.start_time_str.message}</p>}
+
+                  {/* Info banner */}
+                  <div className="mt-3 flex items-center gap-2.5 px-4 py-2.5 bg-white border border-[#5B4CFF]/30 rounded-xl">
+                    <Info className="w-4 h-4 text-[#5B4CFF] shrink-0" />
+                    <p className="text-[12px] text-[#5B4CFF] font-medium leading-snug">
+                      Emails will be sent randomly within this window to ensure natural delivery and better deliverability.
+                    </p>
+                  </div>
+                </div>
+
+                {/* 6. Daily Execution Cap */}
+                <div>
+                  <SectionLabel>Daily Execution Cap</SectionLabel>
+                  <p className="text-[12px] text-gray-500 -mt-2 mb-3">Set the maximum number of emails to send per day across all steps</p>
+                  <div className="relative w-full">
+                    <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                    </div>
+                    <input
+                      type="number"
+                      min={1}
+                      placeholder="Enter maximum executions per day"
+                      className={`w-full pl-10 pr-10 py-2.5 border rounded-xl text-[13px] text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 transition-all ${
+                        errors.daily_sending_limit ? 'border-red-300 focus:ring-red-400' : 'border-gray-200 focus:ring-indigo-500'
+                      }`}
+                      {...register('daily_sending_limit')}
+                    />
+                    <div className="absolute right-2.5 top-1/2 -translate-y-1/2 flex flex-col gap-0.5">
+                      <button type="button" className="text-gray-300 hover:text-gray-600 transition-colors">
+                        <ChevronUp className="w-3.5 h-3.5" />
+                      </button>
+                      <button type="button" className="text-gray-300 hover:text-gray-600 transition-colors">
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
                   {errors.daily_sending_limit && <p className="text-xs text-red-500 mt-1">{errors.daily_sending_limit.message}</p>}
                 </div>
+
               </div>
+            </form>
+          </div>
 
-              {/* ─── Right Column: Live Summary ───────────────────── */}
-              <div className="shrink-0">
-                <div className="bg-gray-50 border border-gray-200 rounded-xl p-5 sticky top-0">
-                  <h3 className="text-sm font-bold text-gray-800 mb-4 flex items-center gap-2">
-                    <Info className="w-4 h-4 text-indigo-500" />
-                    Sequence Summary
-                  </h3>
+          {/* ── Footer ── */}
+          <div className="flex items-center justify-between px-6 py-4 border-t border-gray-100 shrink-0">
+            <button
+              type="button"
+              onClick={handleClose}
+              className="px-5 py-2.5 rounded-xl border border-gray-300 text-gray-700 text-[13px] font-semibold hover:bg-gray-50 transition-colors"
+            >
+              Cancel
+            </button>
 
-                  <div className="space-y-3.5">
-                    <SummaryItem label="Mode">
-                      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
-                        sendingPreference === 'immediate' ? 'bg-emerald-100 text-emerald-700' : 'bg-indigo-100 text-indigo-700'
-                      }`}>
-                        {sendingPreference === 'immediate' ? '⚡ Send Immediately' : '📅 Scheduled'}
-                      </span>
-                    </SummaryItem>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => reset()}
+                className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl border border-red-200 text-red-500 text-[13px] font-semibold hover:bg-red-50 transition-colors"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                Clear All
+              </button>
 
-                    <SummaryItem label="Active Days">
-                      <span className="text-xs text-gray-900 font-medium">
-                        {activeDayNames || <span className="text-gray-400 italic">None selected</span>}
-                      </span>
-                    </SummaryItem>
-
-                    <SummaryItem label="Timezone">
-                      <span className="text-xs text-gray-900">{tzLabel}</span>
-                    </SummaryItem>
-
-                    <SummaryItem label="Sending Window">
-                      <span className="text-xs text-gray-900 font-medium">
-                        {formatTime(sH || 0, sM || 0)} – {formatTime(eH || 0, eM || 0)}
-                      </span>
-                    </SummaryItem>
-
-                    <SummaryItem label="Daily Cap">
-                      <span className="text-xs text-gray-900 font-medium">{dailyLimit || 200} emails/day</span>
-                    </SummaryItem>
-
-                    {nextSlot && sendingPreference === 'immediate' && (
-                      <div className="pt-3 border-t border-gray-200">
-                        <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-1">First Send</p>
-                        <div className="flex items-center gap-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                          <span className="text-xs text-gray-700 font-medium">{nextSlot}</span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
+              <button
+                type="submit"
+                form="create-seq-form"
+                disabled={isSubmitting}
+                className="flex items-center gap-2 px-6 py-2.5 bg-[#5B4CFF] text-white text-[13px] font-bold rounded-xl hover:bg-indigo-700 transition-colors shadow-md shadow-indigo-600/20 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {isSubmitting ? (
+                  <><LoadingSpinner size={15} /> Creating...</>
+                ) : (
+                  <><Send className="w-4 h-4" /> Create Sequence</>
+                )}
+              </button>
             </div>
-          </form>
-        </div>
-
-        {/* ── Footer ── */}
-        <div className="flex items-center justify-between px-7 py-4 border-t border-gray-100 bg-gray-50/50 rounded-b-2xl shrink-0">
-          <button
-            type="button"
-            onClick={handleClose}
-            className="px-5 py-2.5 rounded-xl border border-gray-300 text-gray-700 text-sm font-semibold hover:bg-gray-100 transition-colors"
-          >
-            Cancel
-          </button>
-
-          <button
-            type="submit"
-            form="create-seq-form"
-            disabled={isSubmitting}
-            className="flex items-center gap-2.5 px-7 py-2.5 bg-indigo-600 text-white text-sm font-bold rounded-xl hover:bg-indigo-700 transition-colors shadow-md shadow-indigo-600/25 disabled:opacity-60 disabled:cursor-not-allowed"
-            style={{ minWidth: 180, height: 44 }}
-          >
-            {isSubmitting ? (
-              <>
-                <LoadingSpinner size={16} />
-                Creating...
-              </>
-            ) : (
-              <>
-                <Zap className="w-4 h-4" />
-                Create Sequence
-              </>
-            )}
-          </button>
-        </div>
+          </div>
       </div>
     </div>
   );
 };
-
-// ─── Small helper ─────────────────────────────────────────────────────────────
-
-function SummaryItem({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-0.5">{label}</p>
-      {children}
-    </div>
-  );
-}

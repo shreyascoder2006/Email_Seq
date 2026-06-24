@@ -12,6 +12,8 @@ import {
   AlignLeft, AlignCenter, AlignRight, MoreHorizontal, ChevronDown, Eye, Edit3
 } from 'lucide-react';
 import { cn } from '../../utils/cn';
+import { InsertImageModal } from './InsertImageModal';
+import { InsertLinkModal } from './InsertLinkModal';
 
 interface RichTextEditorProps {
   value: string;
@@ -27,37 +29,17 @@ const MenuBar = ({ editor }: { editor: any }) => {
   const [showStyle, setShowStyle] = React.useState(false);
   const [showMore, setShowMore] = React.useState(false);
 
+  const [showImageModal, setShowImageModal] = React.useState(false);
+  const [showLinkModal, setShowLinkModal] = React.useState(false);
+
   if (!editor) return null;
 
   const setLink = useCallback(() => {
-    const previousUrl = editor.getAttributes('link').href;
-    const url = window.prompt('URL', previousUrl);
-
-    if (url === null) return;
-
-    if (url === '') {
-      editor.chain().focus().extendMarkRange('link').unsetLink().run();
-      return;
-    }
-
-    editor.chain().focus().extendMarkRange('link').setLink({ href: url }).run();
+    setShowLinkModal(true);
   }, [editor]);
 
   const uploadImage = () => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*';
-    input.onchange = (e: any) => {
-      const file = e.target.files[0];
-      if (file) {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          editor.chain().focus().setImage({ src: e.target?.result as string }).run();
-        };
-        reader.readAsDataURL(file);
-      }
-    };
-    input.click();
+    setShowImageModal(true);
   };
 
   const onEmojiClick = (emojiData: EmojiClickData) => {
@@ -234,6 +216,17 @@ const MenuBar = ({ editor }: { editor: any }) => {
           </div>
         )}
       </div>
+
+      <InsertImageModal 
+        editor={editor} 
+        isOpen={showImageModal} 
+        onClose={() => setShowImageModal(false)} 
+      />
+      <InsertLinkModal 
+        editor={editor} 
+        isOpen={showLinkModal} 
+        onClose={() => setShowLinkModal(false)} 
+      />
     </div>
   );
 };

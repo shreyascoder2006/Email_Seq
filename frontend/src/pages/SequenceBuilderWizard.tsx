@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Mail, Clock, ChevronDown,
   Calendar, Users, Zap, Eye, FileText,
-  Wand2, ShieldCheck, User, Info, Check, BarChart2, AlertCircle, Sparkles, Lightbulb, PenTool
+  Wand2, ShieldCheck, User, Info, BarChart2, AlertCircle, Sparkles, Lightbulb, X, Send
 } from 'lucide-react';
 import { toast, Toaster } from 'react-hot-toast';
 import { sequenceService } from '../services/sequence.service';
@@ -14,8 +14,8 @@ import { RichTextEditor } from '../components/editor/RichTextEditor';
 import { PersonalizationDropdown } from '../components/personalization/PersonalizationDropdown';
 import type { MergeTag } from '../components/personalization/PersonalizationSidebar';
 import { LoadingSpinner } from '../components/ui/LoadingSpinner';
+import { SequenceStateToggle } from '../components/sequences/SequenceStateToggle';
 import type { Sequence, SequenceStep, Template, EmailConnection, SequenceIntegrity, StepIntegrityIssue } from '../types';
-import { format } from 'date-fns';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -47,103 +47,55 @@ function getPhaseNameForIndex(index: number): string {
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
+import { SequenceWorkflowStepper, type WorkflowStepId } from '../components/sequences/SequenceWorkflowStepper';
+
 export interface WizardHeaderProps {
   sequence: Sequence;
-  stepCount: number;
-  senderEmail: string;
   onBack: () => void;
-  activeStepIdx?: number;
+  onNext?: () => void;
+  currentStepId?: WorkflowStepId;
+  onToggleStatus?: (isActive: boolean) => void;
 }
 
-export function WizardHeader({ sequence, stepCount, senderEmail, onBack, activeStepIdx = 1 }: WizardHeaderProps) {
-  const isPaused = sequence.status === 'paused' || sequence.status === 'draft';
+export function WizardHeader({ sequence, onBack, onNext, currentStepId = 'sequence', onToggleStatus }: WizardHeaderProps) {
   const isActive = sequence.status === 'active';
 
-  const steps = [
-    { id: 'schedule', label: 'Schedule' },
-    { id: 'sequence', label: 'Sequence' },
-    { id: 'recipients', label: 'Recipients' },
-    { id: 'preview', label: 'Preview/Test' },
-  ];
+
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-6 py-4 mb-6">
-      
-      {/* Top Row: Title and Badges */}
-      <div className="flex items-center gap-3 mb-4">
-        <button 
-          onClick={onBack}
-          className="-ml-2 p-1.5 hover:bg-gray-100 rounded-md text-gray-400 hover:text-gray-900 transition-colors"
-        >
-          <ArrowLeft className="w-5 h-5" />
+    <div className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between shadow-sm sticky top-0 z-50">
+      {/* Left: Icon, Back, Title, Toggle */}
+      <div className="flex items-center gap-4">
+        <div className="w-8 h-8 rounded bg-indigo-600 flex items-center justify-center">
+          <Send className="w-4 h-4 text-white" />
+        </div>
+        <button onClick={onBack} className="p-1 -ml-2 hover:bg-gray-100 rounded text-gray-500 transition-colors">
+          <ArrowLeft className="w-4 h-4" />
         </button>
-        <h1 className="text-xl font-bold text-gray-900 tracking-[-0.01em]">{sequence.name}</h1>
+        <h1 className="text-[15px] font-bold text-gray-900 tracking-tight">{sequence.name}</h1>
         
-        <div className="flex flex-wrap items-center gap-2 ml-4">
-          {/* Status Badge */}
-          <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-bold border ${
-            isActive 
-              ? 'bg-emerald-50 text-emerald-700 border-emerald-200' 
-              : isPaused 
-              ? 'bg-[#FFF7E6] text-[#B45309] border-[#FCD34D]'
-              : 'bg-gray-50 text-gray-600 border-gray-200'
-          }`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-emerald-500' : isPaused ? 'bg-[#D97706]' : 'bg-gray-400'}`} />
-            {isPaused ? 'Paused' : isActive ? 'Active' : sequence.status}
-          </span>
-
-          {/* Created Date */}
-          <span className="inline-flex items-center px-2 py-0.5 bg-[#F8FAFC] border border-[#E5E7EB] rounded text-xs font-semibold text-gray-600">
-            Created {format(new Date(sequence.created_at), 'MMM d, yyyy')}
-          </span>
-
-          {/* Step Count */}
-          <span className="inline-flex items-center px-2 py-0.5 bg-[#F8FAFC] border border-[#E5E7EB] rounded text-xs font-semibold text-gray-600">
-            {stepCount} Step{stepCount !== 1 ? 's' : ''}
-          </span>
-
-          {/* Sender Email */}
-          {senderEmail && (
-            <span className="inline-flex items-center px-2 py-0.5 bg-[#F8FAFC] border border-[#E5E7EB] rounded text-xs font-semibold text-gray-600 truncate max-w-[250px]">
-              From: {senderEmail}
-            </span>
-          )}
+        <div className="ml-2 flex items-center gap-2 border-l border-gray-200 pl-4 h-6">
+          <SequenceStateToggle 
+            isActive={isActive} 
+            onToggle={onToggleStatus || (() => {})} 
+            disabled={!onToggleStatus}
+          />
+          <span className="text-[11px] font-bold text-gray-700 uppercase tracking-wider">{isActive ? 'Active' : 'Paused'}</span>
         </div>
       </div>
 
-      {/* Bottom Row: Wizard Navigation and Action */}
-      <div className="flex items-center justify-between pt-4 border-t border-gray-100">
-        <div className="flex items-center">
-          {steps.map((step, idx) => {
-            const isCompleted = idx < activeStepIdx;
-            const isCurrent = idx === activeStepIdx;
+      {/* Middle: Stepper */}
+      <SequenceWorkflowStepper 
+        currentStepId={currentStepId} 
+        sequenceId={sequence._id}
+      />
 
-            return (
-              <React.Fragment key={step.id}>
-                <div className="flex items-center gap-2">
-                  <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold border-2 transition-colors ${
-                    isCompleted ? 'bg-emerald-500 border-emerald-500 text-white' :
-                    isCurrent ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' :
-                    'bg-white border-gray-200 text-gray-400'
-                  }`}>
-                    {isCompleted ? <Check className="w-3.5 h-3.5" /> : idx}
-                  </div>
-                  <span className={`text-sm font-semibold ${
-                    isCurrent ? 'text-gray-900' : 'text-gray-500'
-                  }`}>
-                    {step.label}
-                  </span>
-                </div>
-
-                {idx < steps.length - 1 && (
-                  <div className={`w-8 h-px mx-3 ${isCompleted ? 'bg-emerald-500' : 'bg-gray-200'}`} />
-                )}
-              </React.Fragment>
-            );
-          })}
-        </div>
+      {/* Right: Next button */}
+      <div className="flex items-center gap-3">
+        <button onClick={onNext} className="flex items-center gap-1.5 px-6 py-2 rounded-lg bg-indigo-600 text-white text-[13px] font-bold hover:bg-indigo-700 transition-colors shadow-sm">
+          Next &rarr;
+        </button>
       </div>
-
     </div>
   );
 }
@@ -187,25 +139,25 @@ function PhaseEditor({ phase, templates, selectedTemplateId, connections, integr
       )}
 
       {/* Tab bar */}
-      <div className="flex items-center border-b border-gray-200 gap-1 shrink-0 px-2 pt-2">
+      <div className="flex items-center border-b border-gray-200 gap-8 px-6 pt-4 shrink-0 bg-white">
         {tabs.map(tab => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`flex items-center gap-2 px-4 py-3 text-sm font-semibold border-b-2 transition-colors ${
+            className={`flex items-center gap-2 pb-3 text-sm font-bold border-b-2 transition-colors ${
               activeTab === tab.id
                 ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50 rounded-t-lg'
+                : 'border-transparent text-gray-500 hover:text-gray-900'
             }`}
           >
-            {tab.icon}
+            {React.cloneElement(tab.icon as React.ReactElement<{ className?: string }>, { className: 'w-4 h-4' })}
             {tab.label}
           </button>
         ))}
       </div>
 
       {/* Tab content */}
-      <div className="flex-1 overflow-y-auto bg-gray-50/30">
+      <div className="flex-1 overflow-y-auto bg-white">
         {(activeTab === 'emailSetup' || activeTab === 'aiWriter') && (
           <ContentTab
             ref={contentTabRef}
@@ -232,17 +184,17 @@ function PhaseEditor({ phase, templates, selectedTemplateId, connections, integr
       </div>
 
       {/* Editor Page Actions Bar */}
-      <div className="border-t border-gray-200 bg-gray-50/80 px-6 py-4 flex justify-between items-center shrink-0">
-        <button className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-gray-300 bg-white text-gray-700 text-sm font-semibold hover:bg-gray-50 transition-colors shadow-sm">
+      <div className="border-t border-gray-100 bg-white px-6 py-4 flex justify-between items-center shrink-0">
+        <button className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-gray-200 bg-white text-gray-700 text-sm font-bold hover:bg-gray-50 transition-colors shadow-sm">
           <FileText className="w-4 h-4" />
           Save as Template
         </button>
         
-        <button onClick={() => {
+        <button id="save-next-btn" onClick={() => {
           const data = contentTabRef.current?.getStepData() || {};
           onNext(data);
-        }} className="flex items-center gap-2 px-6 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 transition-colors shadow-sm">
-          Next →
+        }} className="flex items-center gap-2 px-6 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-700 transition-colors shadow-sm">
+          Next &rarr;
         </button>
       </div>
     </div>
@@ -569,10 +521,10 @@ const ContentTab = forwardRef<ContentTabRef, ContentTabProps>(({ phase, selected
         )}
       
       {/* Top section: Sender Dropdown + Preview Button */}
-      <div className="flex items-start gap-4">
-        <div className="flex-1 space-y-1.5">
-          <label className="block text-sm font-bold text-gray-700">From (Sender)</label>
-          <div className="relative">
+      <div className="space-y-1.5">
+        <label className="block text-sm font-bold text-gray-700">From (Sender)</label>
+        <div className="flex items-center gap-3">
+          <div className="relative flex-1">
             {connections.length === 0 ? (
               <div className="w-full px-4 py-2.5 border border-amber-200 bg-amber-50 rounded-lg text-sm text-amber-700 font-medium">
                 No email accounts connected.{' '}
@@ -582,7 +534,7 @@ const ContentTab = forwardRef<ContentTabRef, ContentTabProps>(({ phase, selected
               <select
                 value={selectedConnectionId}
                 onChange={(e) => setSelectedConnectionId(e.target.value)}
-                className="w-full appearance-none bg-white border border-gray-200 rounded-lg px-4 py-2.5 pr-10 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors"
+                className="w-full appearance-none bg-white border border-gray-200 rounded-lg px-4 py-2.5 pr-10 text-[13px] text-gray-900 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-colors"
               >
                 {connections.map(conn => (
                   <option key={conn._id} value={conn._id}>
@@ -595,53 +547,51 @@ const ContentTab = forwardRef<ContentTabRef, ContentTabProps>(({ phase, selected
               <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
             )}
           </div>
-          <div className="flex gap-4 pt-1">
-            <button onClick={() => setShowCc(!showCc)} className={`text-xs font-semibold hover:text-indigo-700 ${showCc ? 'text-indigo-700' : 'text-indigo-600'}`}>CC</button>
-            <button onClick={() => setShowBcc(!showBcc)} className={`text-xs font-semibold hover:text-indigo-700 ${showBcc ? 'text-indigo-700' : 'text-indigo-600'}`}>BCC</button>
-          </div>
-          
-          {showCc && (
-            <div className="mt-2 space-y-1">
-              <input
-                type="text"
-                placeholder="CC (comma separated)..."
-                value={ccInput}
-                onChange={handleCcChange}
-                className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 transition-colors ${ccError ? 'border-red-300 focus:ring-red-400 bg-red-50' : 'border-gray-200 focus:ring-indigo-500 bg-white'}`}
-              />
-              {ccError && <p className="text-xs text-red-500 font-medium">{ccError}</p>}
-            </div>
-          )}
-          
-          {showBcc && (
-            <div className="mt-2 space-y-1">
-              <input
-                type="text"
-                placeholder="BCC (comma separated)..."
-                value={bccInput}
-                onChange={handleBccChange}
-                className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 transition-colors ${bccError ? 'border-red-300 focus:ring-red-400 bg-red-50' : 'border-gray-200 focus:ring-indigo-500 bg-white'}`}
-              />
-              {bccError && <p className="text-xs text-red-500 font-medium">{bccError}</p>}
-            </div>
-          )}
-        </div>
-        <div className="pt-7">
-          <button onClick={handlePreview} className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-sm font-semibold text-gray-700 shadow-sm transition-colors">
-            <Eye className="w-4 h-4" />
-            Preview
+          <button onClick={handlePreview} className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-[13px] font-bold text-gray-700 shadow-sm transition-colors shrink-0">
+            <Eye className="w-4 h-4" /> Preview
           </button>
         </div>
+        
+        <div className="flex gap-4 pt-1 pl-1">
+          <button onClick={() => setShowCc(!showCc)} className="text-[11px] font-bold uppercase tracking-wide text-indigo-600 hover:text-indigo-700">CC</button>
+          <button onClick={() => setShowBcc(!showBcc)} className="text-[11px] font-bold uppercase tracking-wide text-indigo-600 hover:text-indigo-700">BCC</button>
+        </div>
+        
+        {showCc && (
+          <div className="mt-2 space-y-1">
+            <input
+              type="text"
+              placeholder="CC (comma separated)..."
+              value={ccInput}
+              onChange={handleCcChange}
+              className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 transition-colors ${ccError ? 'border-red-300 focus:ring-red-400 bg-red-50' : 'border-gray-200 focus:ring-indigo-500 bg-white'}`}
+            />
+            {ccError && <p className="text-xs text-red-500 font-medium">{ccError}</p>}
+          </div>
+        )}
+        
+        {showBcc && (
+          <div className="mt-2 space-y-1">
+            <input
+              type="text"
+              placeholder="BCC (comma separated)..."
+              value={bccInput}
+              onChange={handleBccChange}
+              className={`w-full px-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 transition-colors ${bccError ? 'border-red-300 focus:ring-red-400 bg-red-50' : 'border-gray-200 focus:ring-indigo-500 bg-white'}`}
+            />
+            {bccError && <p className="text-xs text-red-500 font-medium">{bccError}</p>}
+          </div>
+        )}
       </div>
 
       {/* Subject */}
       <div className="space-y-1.5 relative">
-        <label className="block text-sm font-bold text-gray-700">Subject</label>
+        <label className="block text-sm font-bold text-gray-700">Email Subject</label>
         <div className="flex items-center border border-gray-200 rounded-lg bg-white focus-within:border-indigo-500 focus-within:ring-1 focus-within:ring-indigo-500 transition-all">
           <input
             ref={subjectRef}
             type="text"
-            className="flex-1 px-4 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none bg-transparent"
+            className="flex-1 px-4 py-2.5 text-[13px] text-gray-900 placeholder-gray-400 focus:outline-none bg-transparent"
             placeholder="Write your subject here.."
             value={subject}
             onChange={(e) => {
@@ -655,9 +605,8 @@ const ContentTab = forwardRef<ContentTabRef, ContentTabProps>(({ phase, selected
             }}
             onFocus={() => setLastFocusedTarget('subject')}
           />
-          <div className="w-px h-6 bg-gray-200"></div>
-          <button onMouseDown={(e) => openDropdownManual(e, 'subject')} className="flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold text-gray-600 hover:text-gray-900 hover:bg-gray-50 transition-colors shrink-0 rounded-r-lg">
-            Vars <ChevronDown className="w-3.5 h-3.5" />
+          <button onMouseDown={(e) => openDropdownManual(e, 'subject')} className="flex items-center gap-1.5 px-4 py-2.5 text-[13px] font-bold text-gray-600 hover:text-gray-900 hover:bg-gray-50 transition-colors shrink-0 rounded-r-lg border-l border-gray-200">
+            {'{ }'} Insert variables <ChevronDown className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
@@ -784,52 +733,52 @@ export function SequenceSummary({ sequence }: SequenceSummaryProps) {
   };
 
   return (
-    <div className="bg-[#FAF9FB] rounded-xl border border-gray-200 p-5 space-y-6">
+    <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 space-y-6">
       
-      <div className="flex items-center gap-2 border-b border-gray-200 pb-4 mb-2">
-        <BarChart2 className="w-5 h-5 text-indigo-600" />
-        <h3 className="text-[18px] font-semibold text-gray-900">Sequence Summary</h3>
+      <div className="flex items-center gap-2 border-b border-gray-100 pb-4 mb-2">
+        <BarChart2 className="w-4 h-4 text-gray-500" />
+        <h3 className="text-sm font-bold text-gray-900">Sequence Summary</h3>
       </div>
 
-      <SummaryRow icon={<Zap className="w-4 h-4 text-indigo-500" />} label="Launch Mode">
-        <span className="text-sm font-medium text-emerald-600">Send immediately</span>
+      <SummaryRow icon={<Zap className="w-4 h-4 text-indigo-600" />} label="Launch Mode">
+        <span className="text-xs font-bold text-emerald-500">Send immediately</span>
       </SummaryRow>
 
       {activeDays.length > 0 && (
-        <SummaryRow icon={<Calendar className="w-4 h-4 text-indigo-500" />} label="Active Days">
+        <SummaryRow icon={<Calendar className="w-4 h-4 text-indigo-600" />} label="Active Days">
           <div className="flex flex-wrap gap-1 mt-1">
             {activeDays.map(d => (
-              <span key={d} className="px-1.5 py-0.5 bg-indigo-50 text-indigo-600 text-xs font-bold rounded">
+              <span key={d} className="px-1.5 py-0.5 bg-indigo-50 text-indigo-600 text-[10px] font-bold rounded uppercase">
                 {days[d]}
               </span>
             ))}
           </div>
-          <p className="text-xs text-gray-500 mt-1.5">{activeDays.length} day(s) selected</p>
+          <p className="text-[11px] text-gray-500 mt-1.5">{activeDays.length} day(s) selected</p>
         </SummaryRow>
       )}
 
       {window?.timezone && (
-        <SummaryRow icon={<Clock className="w-4 h-4 text-indigo-500" />} label="Timezone">
-          <span className="text-sm text-gray-600">{window.timezone}</span>
+        <SummaryRow icon={<Clock className="w-4 h-4 text-indigo-600" />} label="Timezone">
+          <span className="text-xs text-gray-600">{window.timezone}</span>
         </SummaryRow>
       )}
 
       {window?.start_hour !== undefined && (
-        <SummaryRow icon={<Clock className="w-4 h-4 text-indigo-500" />} label="Sending Window (IST)">
-          <div className="text-sm text-gray-900 font-medium">
+        <SummaryRow icon={<Clock className="w-4 h-4 text-indigo-600" />} label="Sending Window (IST)">
+          <div className="text-xs text-gray-900 font-bold">
             {formatTime(window.start_hour, window.start_minute ?? 0)} – {formatTime(window.end_hour, window.end_minute ?? 0)}
           </div>
-          <div className="text-xs text-gray-500 mt-1">Total window: 30 mins</div>
+          <div className="text-[11px] text-gray-500 mt-0.5">Total window: 30 mins</div>
         </SummaryRow>
       )}
 
-      <SummaryRow icon={<Calendar className="w-4 h-4 text-indigo-500" />} label="Daily Execution Cap">
-        <span className="text-sm text-gray-600">{sequence.daily_sending_limit} emails per day</span>
+      <SummaryRow icon={<Calendar className="w-4 h-4 text-indigo-600" />} label="Daily Execution Cap">
+        <span className="text-xs text-gray-600">{sequence.daily_sending_limit} emails per day</span>
       </SummaryRow>
       
-      <SummaryRow icon={<Users className="w-4 h-4 text-indigo-500" />} label="Phase 1 Reservation Limit">
-        <div className="text-sm text-gray-900 font-medium">30%</div>
-        <div className="text-xs text-gray-500 mt-1">Global daily cap: {sequence.daily_sending_limit}</div>
+      <SummaryRow icon={<Users className="w-4 h-4 text-indigo-600" />} label="Phase 1 Reservation Limit">
+        <div className="text-xs text-gray-900 font-bold">30%</div>
+        <div className="text-[11px] text-gray-500 mt-0.5">Global daily cap: {sequence.daily_sending_limit}</div>
       </SummaryRow>
 
       {/* Info card */}
@@ -850,8 +799,8 @@ export function SummaryRow({ icon, label, children }: { icon: React.ReactNode; l
   return (
     <div className="flex items-start gap-3">
       <div className="mt-0.5 shrink-0">{icon}</div>
-      <div className="min-w-0">
-        <p className="text-xs font-semibold text-gray-700">{label}</p>
+      <div className="min-w-0 space-y-0.5">
+        <p className="text-[12px] font-bold text-gray-900">{label}</p>
         {children}
       </div>
     </div>
@@ -924,16 +873,6 @@ export const SequenceBuilderWizard: React.FC = () => {
         isDefault: true,
       }];
 
-  // Sender email: use connection on selected step or first active connection
-  const senderEmail = (() => {
-    const selectedPhase = phases[selectedPhaseIdx];
-    if (selectedPhase?.step?.email_connection_id) {
-      const conn = connections.find(c => c._id === selectedPhase.step!.email_connection_id);
-      if (conn) return conn.from_email;
-    }
-    const active = connections.find(c => c.status === 'active');
-    return active?.from_email ?? connections[0]?.from_email ?? '';
-  })();
 
   const handleNext = async (stepData: any) => {
     if (!sequence) return;
@@ -960,7 +899,7 @@ export const SequenceBuilderWizard: React.FC = () => {
           });
         }
       }
-      navigate(`/sequences/${sequence._id}/recipients`);
+      navigate(`/sequences/${sequence._id}/recipients/manage`);
     } catch (err) {
       toast.error('Failed to save sequence step');
     } finally {
@@ -975,6 +914,23 @@ export const SequenceBuilderWizard: React.FC = () => {
       </div>
     );
   }
+
+  const handleToggleStatus = async (isActive: boolean) => {
+    if (!sequence) return;
+    try {
+      if (isActive) {
+        const updated = await sequenceService.activate(sequence._id);
+        setSequence(updated);
+        toast.success('Campaign activated');
+      } else {
+        const updated = await sequenceService.updateStatus(sequence._id, 'paused');
+        setSequence(updated);
+        toast.success('Campaign paused');
+      }
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Failed to update campaign status');
+    }
+  };
 
   if (!sequence) {
     return (
@@ -991,49 +947,37 @@ export const SequenceBuilderWizard: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-[#F7F8FA] flex flex-col p-6">
+    <div className="min-h-screen bg-[#FAF9FB] flex flex-col">
       <Toaster position="top-right" />
 
       {/* Header Container */}
-      <div className="max-w-[1600px] w-full mx-auto">
-        <WizardHeader
-          sequence={sequence}
-          stepCount={phases.length}
-          senderEmail={senderEmail}
-          onBack={() => navigate('/sequences')}
-        />
-        
-        {integrity && !integrity.is_valid && (
-          <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3 shadow-sm">
-            <AlertCircle className="w-5 h-5 text-red-600 mt-0.5 shrink-0" />
-            <div>
-              <h3 className="text-sm font-bold text-red-900 mb-2">Sequence Integrity Issues</h3>
-              <ul className="list-disc list-inside text-sm text-red-800 space-y-1">
-                {integrity.issues.map((iss, idx) => (
-                  <li key={idx}>
-                    <strong>{iss.step_id === 'global' ? 'Global' : `Step ${iss.step_index + 1}`}:</strong>{' '}
-                    {iss.issues.join(', ')}
-                  </li>
-                ))}
-              </ul>
-              <p className="text-sm text-red-700 mt-2 font-medium">Please select the flagged steps and save them to repair the sequence.</p>
-            </div>
-          </div>
-        )}
-      </div>
+      <WizardHeader
+        sequence={sequence}
+        onBack={() => navigate('/sequences')}
+        currentStepId="sequence"
+        onToggleStatus={handleToggleStatus}
+      />
 
       {/* Body: 2-column layout (75% - 25%) */}
-      <div className="flex flex-1 max-w-[1600px] w-full mx-auto gap-6 mt-6 pb-16 items-start">
+      <div className="flex flex-1 max-w-[1600px] w-full mx-auto gap-6 mt-6 pb-16 items-start px-6">
         
         {/* Main Content: Phase editor (approx 75%) */}
         <div className="flex-1 min-w-0">
+          {integrity && !integrity.is_valid && (
+            <div className="mb-4 bg-red-50 border border-red-200 rounded-lg p-3 flex items-start gap-2 shadow-sm text-sm text-red-800">
+              <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+              <div>
+                <strong>Sequence Integrity Issues:</strong> Please review flagged steps.
+              </div>
+            </div>
+          )}
           <PhaseEditor
             phase={phases[selectedPhaseIdx] ?? null}
             templates={templates}
             selectedTemplateId={selectedTemplateId}
             onTemplateChange={setSelectedTemplateId}
             connections={connections}
-            integrityIssue={integrity?.issues?.find(iss => iss.step_id === phases[selectedPhaseIdx]?.step?._id)}
+            integrityIssue={integrity?.issues?.find(iss => iss.step_id === phases[selectedPhaseIdx]?.step?._id) || integrity?.issues?.find(iss => iss.step_id === 'global')}
             onNext={handleNext}
           />
         </div>

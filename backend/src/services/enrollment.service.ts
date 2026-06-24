@@ -193,15 +193,7 @@ export class EnrollmentService {
 
       // Update sequence stats
       if (inserted.length > 0) {
-        await Sequence.updateOne(
-          { _id: sequenceId },
-          {
-            $inc: {
-              'stats.total_contacts':  inserted.length,
-              'stats.active_contacts': inserted.length,
-            },
-          }
-        );
+        await this.recomputeSequenceStats(sequenceId);
       }
 
       // Add detailed logging for the enrolled contacts
@@ -323,14 +315,6 @@ export class EnrollmentService {
       contact.status    = ContactEnrollmentStatus.REMOVED;
       contact.next_send_at = null;
       if (dto.reason) contact.last_error = dto.reason;
-
-      // Decrement active contacts if it was active
-      if (originalStatus === ContactEnrollmentStatus.ACTIVE) {
-        await Sequence.updateOne(
-          { _id: sequenceId },
-          { $inc: { 'stats.active_contacts': -1 } }
-        );
-      }
     } else if (dto.status === 'paused') {
       contact.status    = ContactEnrollmentStatus.PAUSED;
       contact.paused_at = new Date();
@@ -350,16 +334,12 @@ export class EnrollmentService {
       if (!contact.next_send_at || contact.next_send_at <= new Date()) {
         contact.next_send_at = new Date();
       }
-
-      if (originalStatus !== ContactEnrollmentStatus.ACTIVE) {
-        await Sequence.updateOne(
-          { _id: sequenceId },
-          { $inc: { 'stats.active_contacts': 1 } }
-        );
-      }
     }
 
     await contact.save();
+    
+    // Recompute sequence stats to reflect the status change
+    await this.recomputeSequenceStats(sequenceId);
 
     logger.info('Contact status patched', {
       contactId,
@@ -376,7 +356,7 @@ export class EnrollmentService {
     userId: string,
     sequenceId: string,
     dto: BulkContactActionDto
-  ): Promise<{ deleted: number }> {
+  ): Promise<{ deleted: number; updatedStats: { total_contacts: number; active_contacts: number; paused_contacts: number; completed: number } }> {
     const seq = await Sequence.findOne({ _id: sequenceId, user_id: userId });
     if (!seq) throw AppError.notFound('Sequence');
 
@@ -385,29 +365,17 @@ export class EnrollmentService {
       sequence_id: sequenceId
     });
 
-    if (contacts.length === 0) return { deleted: 0 };
-
-    let activeCountToRemove = 0;
-    contacts.forEach(c => {
-      if (c.status === ContactEnrollmentStatus.ACTIVE) {
-        activeCountToRemove++;
-      }
-    });
+    if (contacts.length === 0) return { deleted: 0, updatedStats: { total_contacts: 0, active_contacts: 0, paused_contacts: 0, completed: 0 } };
 
     await SequenceContact.deleteMany({
       _id: { $in: contacts.map(c => c._id) },
       sequence_id: sequenceId
     });
 
-    if (activeCountToRemove > 0) {
-      await Sequence.updateOne(
-        { _id: sequenceId },
-        { $inc: { 'stats.active_contacts': -activeCountToRemove } }
-      );
-    }
+    const updatedStats = await this.recomputeSequenceStats(sequenceId);
 
     logger.info('Bulk deleted contacts', { sequenceId, userId, count: contacts.length });
-    return { deleted: contacts.length };
+    return { deleted: contacts.length, updatedStats };
   }
 
   // ── Bulk Pause ────────────────────────────────────────────────────
@@ -415,7 +383,7 @@ export class EnrollmentService {
     userId: string,
     sequenceId: string,
     dto: BulkContactActionDto
-  ): Promise<{ paused: number }> {
+  ): Promise<{ paused: number; updatedStats: { total_contacts: number; active_contacts: number; paused_contacts: number; completed: number } }> {
     const seq = await Sequence.findOne({ _id: sequenceId, user_id: userId });
     if (!seq) throw AppError.notFound('Sequence');
 
@@ -425,7 +393,7 @@ export class EnrollmentService {
       status: ContactEnrollmentStatus.ACTIVE // only active can be paused
     });
 
-    if (contacts.length === 0) return { paused: 0 };
+    if (contacts.length === 0) return { paused: 0, updatedStats: { total_contacts: 0, active_contacts: 0, paused_contacts: 0, completed: 0 } };
 
     await SequenceContact.updateMany(
       { _id: { $in: contacts.map(c => c._id) } },
@@ -437,13 +405,10 @@ export class EnrollmentService {
       }
     );
 
-    await Sequence.updateOne(
-      { _id: sequenceId },
-      { $inc: { 'stats.active_contacts': -contacts.length } }
-    );
+    const updatedStats = await this.recomputeSequenceStats(sequenceId);
 
     logger.info('Bulk paused contacts', { sequenceId, userId, count: contacts.length });
-    return { paused: contacts.length };
+    return { paused: contacts.length, updatedStats };
   }
 
   // ── Bulk Resume ───────────────────────────────────────────────────
@@ -451,7 +416,7 @@ export class EnrollmentService {
     userId: string,
     sequenceId: string,
     dto: BulkContactActionDto
-  ): Promise<{ resumed: number }> {
+  ): Promise<{ resumed: number; updatedStats: { total_contacts: number; active_contacts: number; paused_contacts: number; completed: number } }> {
     const seq = await Sequence.findOne({ _id: sequenceId, user_id: userId });
     if (!seq) throw AppError.notFound('Sequence');
 
@@ -461,7 +426,7 @@ export class EnrollmentService {
       status: ContactEnrollmentStatus.PAUSED // only paused can be resumed
     });
 
-    if (contacts.length === 0) return { resumed: 0 };
+    if (contacts.length === 0) return { resumed: 0, updatedStats: { total_contacts: 0, active_contacts: 0, paused_contacts: 0, completed: 0 } };
 
     const now = new Date();
     // Use the shared calculateNextValidSlot to ensure they don't get stuck in the past
@@ -478,13 +443,42 @@ export class EnrollmentService {
       }
     );
 
-    await Sequence.updateOne(
-      { _id: sequenceId },
-      { $inc: { 'stats.active_contacts': contacts.length } }
-    );
+    const updatedStats = await this.recomputeSequenceStats(sequenceId);
 
     logger.info('Bulk resumed contacts', { sequenceId, userId, count: contacts.length });
-    return { resumed: contacts.length };
+    return { resumed: contacts.length, updatedStats };
+  }
+
+  // ── Bulk Skip ─────────────────────────────────────────────────────
+  async bulkSkip(
+    userId: string,
+    sequenceId: string,
+    dto: BulkContactActionDto
+  ): Promise<{ skipped: number; updatedStats: { total_contacts: number; active_contacts: number; paused_contacts: number; completed: number } }> {
+    const seq = await Sequence.findOne({ _id: sequenceId, user_id: userId });
+    if (!seq) throw AppError.notFound('Sequence');
+
+    const contacts = await SequenceContact.find({
+      _id: { $in: dto.contactIds },
+      sequence_id: sequenceId,
+    });
+
+    if (contacts.length === 0) return { skipped: 0, updatedStats: { total_contacts: 0, active_contacts: 0, paused_contacts: 0, completed: 0 } };
+
+    await SequenceContact.updateMany(
+      { _id: { $in: contacts.map(c => c._id) } },
+      { 
+        $set: { 
+          status: ContactEnrollmentStatus.SKIPPED, 
+          next_send_at: null 
+        } 
+      }
+    );
+
+    const updatedStats = await this.recomputeSequenceStats(sequenceId);
+
+    logger.info('Bulk skipped contacts', { sequenceId, userId, count: contacts.length });
+    return { skipped: contacts.length, updatedStats };
   }
 
   // ── Remove / Unsubscribe a contact ────────────────────────────────
@@ -582,6 +576,47 @@ export class EnrollmentService {
 
     contact.consecutive_failures = 0;
     await contact.save();
+  }
+
+  // ── Recompute Sequence Stats ────────────────────────────────────────
+  async recomputeSequenceStats(sequenceId: string): Promise<{
+    total_contacts: number;
+    active_contacts: number;
+    paused_contacts: number;
+    completed: number;
+  }> {
+    const contacts = await SequenceContact.find({ sequence_id: sequenceId }).lean();
+
+    let total = 0;
+    let active = 0;
+    let paused = 0;
+    let completed = 0;
+
+    contacts.forEach((c) => {
+      // total_contacts = contacts that are not removed or skipped
+      if (c.status !== ContactEnrollmentStatus.REMOVED && c.status !== ContactEnrollmentStatus.SKIPPED) {
+        total++;
+      }
+      if (c.status === ContactEnrollmentStatus.ACTIVE) active++;
+      if (c.status === ContactEnrollmentStatus.PAUSED) paused++;
+      if (c.status === ContactEnrollmentStatus.COMPLETED) completed++;
+    });
+
+    const stats = { total_contacts: total, active_contacts: active, paused_contacts: paused, completed };
+
+    await Sequence.updateOne(
+      { _id: sequenceId },
+      {
+        $set: {
+          'stats.total_contacts': stats.total_contacts,
+          'stats.active_contacts': stats.active_contacts,
+          'stats.paused_contacts': stats.paused_contacts,
+          'stats.completed': stats.completed,
+        },
+      }
+    );
+
+    return stats;
   }
 }
 

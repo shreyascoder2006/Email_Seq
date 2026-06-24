@@ -55,6 +55,7 @@ export interface ISequence extends Document {
   stats: {
     total_contacts:  number;
     active_contacts: number;
+    paused_contacts: number;
     completed:       number;
     unsubscribed:    number;
     total_sent:      number;
@@ -99,6 +100,7 @@ const StatsSchema = new Schema(
   {
     total_contacts:  { type: Number, default: 0 },
     active_contacts: { type: Number, default: 0 },
+    paused_contacts: { type: Number, default: 0 },
     completed:       { type: Number, default: 0 },
     unsubscribed:    { type: Number, default: 0 },
     total_sent:      { type: Number, default: 0 },

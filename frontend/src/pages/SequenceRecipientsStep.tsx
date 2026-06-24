@@ -5,8 +5,7 @@ import {
 } from 'lucide-react';
 import { toast, Toaster } from 'react-hot-toast';
 import { sequenceService } from '../services/sequence.service';
-import { emailAccountService } from '../services/emailAccount.service';
-import type { Sequence, EmailConnection, ParsePreviewResult, FieldMapping } from '../types';
+import type { Sequence, ParsePreviewResult, FieldMapping } from '../types';
 import { LoadingSpinner } from '../components/ui/LoadingSpinner';
 import { WizardHeader, SequenceSummary } from './SequenceBuilderWizard';
 import { MapStage, ReviewStage } from './ImportLists';
@@ -17,7 +16,6 @@ export function SequenceRecipientsStep() {
   const navigate = useNavigate();
 
   const [sequence, setSequence] = useState<Sequence | null>(null);
-  const [connections, setConnections] = useState<EmailConnection[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   // Embedded Import State
@@ -52,12 +50,8 @@ export function SequenceRecipientsStep() {
     if (!id) return;
     try {
       setIsLoading(true);
-      const [seqData, accData] = await Promise.all([
-        sequenceService.getWithSteps(id),
-        emailAccountService.list(),
-      ]);
+      const seqData = await sequenceService.getWithSteps(id);
       setSequence(seqData.sequence);
-      setConnections(accData);
     } catch {
       toast.error('Failed to load sequence data');
     } finally {
@@ -89,10 +83,7 @@ export function SequenceRecipientsStep() {
     );
   }
 
-  const senderEmail = (() => {
-    const active = connections.find(c => c.status === 'active');
-    return active?.from_email ?? connections[0]?.from_email ?? '';
-  })();
+
 
   const handleNext = () => {
     navigate(`/sequences/${sequence._id}/recipients/manage`);
@@ -100,6 +91,23 @@ export function SequenceRecipientsStep() {
 
   const handleBack = () => {
     navigate(`/sequences/${sequence._id}/builder-v2`);
+  };
+
+  const handleToggleStatus = async (isActive: boolean) => {
+    if (!sequence) return;
+    try {
+      if (isActive) {
+        const updated = await sequenceService.activate(sequence._id);
+        setSequence(updated);
+        toast.success('Campaign activated');
+      } else {
+        const updated = await sequenceService.updateStatus(sequence._id, 'paused');
+        setSequence(updated);
+        toast.success('Campaign paused');
+      }
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Failed to update campaign status');
+    }
   };
 
   return (
@@ -110,10 +118,9 @@ export function SequenceRecipientsStep() {
       <div className="max-w-[1600px] w-full mx-auto">
         <WizardHeader
           sequence={sequence}
-          stepCount={sequence.step_count || 1}
-          senderEmail={senderEmail}
           onBack={() => navigate('/sequences')}
-          activeStepIdx={2} // 0: Schedule, 1: Sequence, 2: Recipients, 3: Preview
+          currentStepId="recipients"
+          onToggleStatus={handleToggleStatus}
         />
       </div>
 
@@ -123,46 +130,96 @@ export function SequenceRecipientsStep() {
         {/* Main Content (Left) */}
         <div style={{ flex: '0 0 80%' }} className="flex flex-col gap-8 min-w-0">
 
-          {/* Progress Journey */}
-          <div className="flex items-center justify-center pt-8">
-            <div className="flex items-center gap-4">
+          {/* ── 3-Circle Progress Flow (matches reference screenshot exactly) ── */}
+          <div className="flex items-start justify-center pt-10">
+            <div className="flex items-start gap-0">
 
-              {/* Card 1: Import Contacts */}
-              <div className="w-[280px] p-5 rounded-2xl border border-[#D9D6FE] bg-white flex items-start gap-4 shadow-sm relative z-10">
-                <div className="flex items-center justify-center w-10 h-10 rounded-full bg-[#F4F2FA] shrink-0">
-                  <UserPlus className="w-5 h-5 text-[#5B4CFF]" />
+              {/* Step 1: Add Recipients (active — filled purple) */}
+              <div className="flex flex-col items-center" style={{ width: 120 }}>
+                <div className="w-16 h-16 rounded-full border-2 border-[#5B4CFF] bg-white flex items-center justify-center shadow-sm">
+                  <UserPlus className="w-7 h-7 text-[#5B4CFF]" strokeWidth={1.5} />
+                </div>
+                <p className="text-[13px] font-bold text-[#5B4CFF] mt-3 text-center leading-snug">Add Recipients</p>
+              </div>
+
+              {/* Dashed connector */}
+              <div className="flex-1 flex items-center" style={{ marginTop: 30, minWidth: 80 }}>
+                <div className="w-full border-t-2 border-dashed border-gray-300" />
+              </div>
+
+              {/* Step 2: Email Steps (inactive) */}
+              <div className="flex flex-col items-center" style={{ width: 120 }}>
+                <div className="w-16 h-16 rounded-full border-2 border-gray-200 bg-white flex items-center justify-center shadow-sm">
+                  <svg className="w-7 h-7 text-gray-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+                    <polyline points="22,6 12,13 2,6"/>
+                  </svg>
+                </div>
+                <p className="text-[13px] font-semibold text-gray-400 mt-3 text-center leading-snug">Email Steps</p>
+              </div>
+
+              {/* Dashed connector */}
+              <div className="flex-1 flex items-center" style={{ marginTop: 30, minWidth: 80 }}>
+                <div className="w-full border-t-2 border-dashed border-gray-300" />
+              </div>
+
+              {/* Step 3: Launch Sequence (inactive) */}
+              <div className="flex flex-col items-center" style={{ width: 120 }}>
+                <div className="w-16 h-16 rounded-full border-2 border-gray-200 bg-white flex items-center justify-center shadow-sm">
+                  <svg className="w-7 h-7 text-gray-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/>
+                    <path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/>
+                    <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/>
+                    <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>
+                  </svg>
+                </div>
+                <p className="text-[13px] font-semibold text-gray-400 mt-3 text-center leading-snug">Launch Sequence</p>
+              </div>
+
+            </div>
+          </div>
+
+          {/* ── 3-Card Info Row ── */}
+          <div className="flex items-center justify-center">
+            <div className="flex items-stretch gap-4">
+
+              {/* Card 1 */}
+              <div className="w-[220px] flex items-start gap-3 p-4 rounded-2xl border border-gray-200 bg-white shadow-sm">
+                <div className="w-10 h-10 rounded-xl bg-[#F4F2FA] flex items-center justify-center shrink-0">
+                  <svg className="w-5 h-5 text-[#5B4CFF]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="3" y="3" width="7" height="4" rx="1"/><rect x="3" y="10" width="7" height="11" rx="1"/>
+                    <rect x="13" y="3" width="8" height="11" rx="1"/><rect x="13" y="17" width="8" height="4" rx="1"/>
+                  </svg>
                 </div>
                 <div>
-                  <h3 className="text-[14px] font-bold text-gray-900 mb-1">Import Contacts</h3>
-                  <p className="text-[12px] text-gray-500 leading-snug">Upload a CSV file with your prospect list.</p>
+                  <h4 className="text-[13px] font-bold text-gray-900">Import Contacts</h4>
+                  <p className="text-[11.5px] text-gray-500 mt-0.5 leading-snug">Upload a CSV file with your prospect list.</p>
                 </div>
               </div>
 
-              {/* Arrow */}
-              <ArrowRight className="w-5 h-5 text-[#5B4CFF] -ml-2 -mr-2 relative z-0" />
+              <ArrowRight className="w-5 h-5 text-[#5B4CFF] self-center shrink-0" />
 
-              {/* Card 2: Choose Recipients */}
-              <div className="w-[280px] p-5 rounded-2xl border border-blue-200 bg-[#F4F8FF] flex items-start gap-4 shadow-sm relative z-10">
-                <div className="flex items-center justify-center w-10 h-10 rounded-full bg-white shrink-0 shadow-sm border border-blue-100">
-                  <Search className="w-5 h-5 text-blue-600" />
+              {/* Card 2 */}
+              <div className="w-[220px] flex items-start gap-3 p-4 rounded-2xl border-2 border-[#5B4CFF]/20 bg-[#F7F6FF] shadow-sm">
+                <div className="w-10 h-10 rounded-xl bg-white border border-indigo-100 flex items-center justify-center shrink-0 shadow-sm">
+                  <Search className="w-5 h-5 text-[#5B4CFF]" />
                 </div>
                 <div>
-                  <h3 className="text-[14px] font-bold text-blue-900 mb-1">Choose Recipients</h3>
-                  <p className="text-[12px] text-blue-700/80 leading-snug">Select contacts from your saved searches.</p>
+                  <h4 className="text-[13px] font-bold text-[#5B4CFF]">Choose Recipients</h4>
+                  <p className="text-[11.5px] text-indigo-500/70 mt-0.5 leading-snug">Select contacts from your saved searches.</p>
                 </div>
               </div>
 
-              {/* Arrow */}
-              <ArrowRight className="w-5 h-5 text-[#5B4CFF] -ml-2 -mr-2 relative z-0" />
+              <ArrowRight className="w-5 h-5 text-[#5B4CFF] self-center shrink-0" />
 
-              {/* Card 3: Ready To Launch */}
-              <div className="w-[280px] p-5 rounded-2xl border border-emerald-200 bg-[#F2FCF5] flex items-start gap-4 shadow-sm relative z-10">
-                <div className="flex items-center justify-center w-10 h-10 rounded-full bg-white shrink-0 shadow-sm border border-emerald-100">
+              {/* Card 3 */}
+              <div className="w-[220px] flex items-start gap-3 p-4 rounded-2xl border border-emerald-200 bg-[#F0FDF4] shadow-sm">
+                <div className="w-10 h-10 rounded-xl bg-white border border-emerald-100 flex items-center justify-center shrink-0 shadow-sm">
                   <Users className="w-5 h-5 text-emerald-600" />
                 </div>
                 <div>
-                  <h3 className="text-[14px] font-bold text-emerald-900 mb-1">Ready to Launch</h3>
-                  <p className="text-[12px] text-emerald-700/80 leading-snug">Proceed to set up your email steps and launch sequence.</p>
+                  <h4 className="text-[13px] font-bold text-emerald-800">Ready to Launch</h4>
+                  <p className="text-[11.5px] text-emerald-700/70 mt-0.5 leading-snug">Proceed to set up your email steps and launch sequence.</p>
                 </div>
               </div>
 

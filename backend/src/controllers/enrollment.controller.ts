@@ -128,3 +128,19 @@ export async function bulkResumeContacts(
     sendSuccess(res, result, `Successfully resumed ${result.resumed} contacts`);
   } catch (err) { next(err); }
 }
+
+// ─── PATCH /api/sequences/:id/contacts/skip ──────────────────────
+export async function bulkSkipContacts(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const result = await enrollmentService.bulkSkip(
+      uid(req),
+      req.params.id,
+      req.body
+    );
+    sendSuccess(res, result, `Successfully skipped ${result.skipped} contacts`);
+  } catch (err) { next(err); }
+}

@@ -23,6 +23,7 @@ import {
   bulkDeleteContacts,
   bulkPauseContacts,
   bulkResumeContacts,
+  bulkSkipContacts,
 } from '../controllers/enrollment.controller';
 import { authenticate }  from '../middleware/auth';
 import { validate }      from '../middleware/validate';
@@ -329,6 +330,17 @@ router.patch(
   validate(IdParamSchema, 'params'),
   validate(BulkContactActionSchema, 'body'),
   bulkResumeContacts
+);
+
+/**
+ * PATCH /api/sequences/:id/contacts/skip
+ * Bulk skip contacts
+ */
+router.patch(
+  '/:id/contacts/skip',
+  validate(IdParamSchema, 'params'),
+  validate(BulkContactActionSchema, 'body'),
+  bulkSkipContacts
 );
 
 /**

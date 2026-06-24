@@ -10,7 +10,7 @@ export const AppLayout: React.FC = () => {
       <div className="flex flex-1 flex-col overflow-hidden">
         <TopNav />
         <main className="flex-1 overflow-y-auto p-8">
-          <div className="mx-auto max-w-7xl">
+          <div className="w-full min-w-0">
             <Outlet />
           </div>
         </main>
