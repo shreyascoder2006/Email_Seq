@@ -1,5 +1,19 @@
 import api from './api';
-import type { Sequence, CreateSequenceDto, PaginatedResponse, SequenceStep, CreateStepDto, UpdateStepDto, ReorderStepsDto } from '../types';
+import type { Sequence, CreateSequenceDto, PaginatedResponse, SequenceStep, CreateStepDto, UpdateStepDto, ReorderStepsDto, SequenceIntegrity } from '../types';
+
+export interface PreActivationCheckResponse {
+  valid: boolean;
+  warnings: string[];
+  errors: string[];
+  is_first_campaign: boolean;
+  summary: {
+    contacts: number;
+    steps: number;
+    sender: string;
+    first_subject: string;
+    estimated_sends_today: number;
+  };
+}
 
 export const sequenceService = {
   // List sequences with pagination, search, and filters
@@ -49,6 +63,12 @@ export const sequenceService = {
     return response.data.data || response.data;
   },
 
+  // Get sequence integrity
+  getIntegrity: async (id: string): Promise<SequenceIntegrity> => {
+    const response = await api.get(`/sequences/${id}/integrity`);
+    return response.data.data || response.data;
+  },
+
   // Add step
   addStep: async (sequenceId: string, data: CreateStepDto): Promise<SequenceStep> => {
     const response = await api.post(`/sequences/${sequenceId}/steps`, data);
@@ -69,6 +89,18 @@ export const sequenceService = {
   // Reorder steps
   reorderSteps: async (sequenceId: string, data: ReorderStepsDto): Promise<SequenceStep[]> => {
     const response = await api.patch(`/sequences/${sequenceId}/steps/reorder`, data);
+    return response.data.data || response.data;
+  },
+
+  // Pre-activation check
+  preActivationCheck: async (id: string): Promise<PreActivationCheckResponse> => {
+    const response = await api.post(`/sequences/${id}/pre-activation-check`);
+    return response.data.data || response.data;
+  },
+
+  // Activate sequence (transition to active)
+  activate: async (id: string): Promise<Sequence> => {
+    const response = await api.patch(`/sequences/${id}/status`, { status: 'active' });
     return response.data.data || response.data;
   },
 };

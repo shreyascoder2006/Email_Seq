@@ -28,6 +28,7 @@ export function errorHandler(
     const response: ApiResponse = {
       success: false,
       message: err.message,
+      ...(err.details && { details: err.details }),
       ...(isDev && { errors: [{ stack: err.stack }] }),
     };
     res.status(err.statusCode).json(response);

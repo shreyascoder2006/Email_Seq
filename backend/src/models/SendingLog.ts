@@ -106,6 +106,8 @@ SendingLogSchema.index({ sequence_contact_id: 1, step_index: 1 });
 SendingLogSchema.index({ sequence_id: 1, status: 1, sent_at: -1 });
 // User-level analytics
 SendingLogSchema.index({ user_id: 1, sent_at: -1 });
+// Sender-level analytics (for the Sender Analytics dashboard)
+SendingLogSchema.index({ user_id: 1, email_connection_id: 1, status: 1, sent_at: -1 });
 // SMTP message-id lookup (for reply matching)
 SendingLogSchema.index({ message_id: 1 }, { sparse: true });
 

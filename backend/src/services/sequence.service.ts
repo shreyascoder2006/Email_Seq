@@ -2,6 +2,7 @@ import { Types, FilterQuery } from 'mongoose';
 import { Sequence, ISequence, SequenceStatus } from '../models/Sequence';
 import { SequenceStep, ISequenceStep, StepType } from '../models/SequenceStep';
 import { SequenceContact } from '../models/SequenceContact';
+import { calculateNextValidSlot } from '@email-sequencing/shared';
 import { EmailConnection, ConnectionStatus } from '../models/EmailConnection';
 import { Template } from '../models/Template';
 import { AppError } from '../utils/AppError';
@@ -15,6 +16,7 @@ import {
   UpdateStepDto,
   ReorderStepsDto,
 } from '../validators/sequence.validator';
+import { renderEmail } from '../utils/templateRenderer';
 
 // ─── State machine ─────────────────────────────────────────────────
 /**
@@ -98,6 +100,14 @@ export class SequenceService {
   // ════════════════════════════════════════════════════════════════
 
   async create(userId: string, dto: CreateSequenceDto): Promise<ISequence> {
+    const existingName = await Sequence.findOne({
+      user_id: new Types.ObjectId(userId),
+      name: { $regex: new RegExp(`^${dto.name.trim()}$`, 'i') }
+    });
+    if (existingName) {
+      throw AppError.badRequest('A sequence with this name already exists.');
+    }
+
     // Validate email connection exists and is active if provided
     if (dto.email_connection_id) {
       await assertEmailConnectionValid(userId, dto.email_connection_id);
@@ -118,7 +128,7 @@ export class SequenceService {
       stop_on_click:       dto.stop_on_click,
       track_opens:         dto.track_opens,
       track_clicks:        dto.track_clicks,
-      status:              SequenceStatus.DRAFT,
+      status:              SequenceStatus.PAUSED,
     });
 
     logger.info('Sequence created', { sequenceId: seq._id, userId });
@@ -188,7 +198,17 @@ export class SequenceService {
       seq.email_connection_id = new Types.ObjectId(dto.email_connection_id);
     }
 
-    if (dto.name)        seq.name        = dto.name;
+    if (dto.name) {
+      const existingName = await Sequence.findOne({
+        user_id: new Types.ObjectId(userId),
+        name: { $regex: new RegExp(`^${dto.name.trim()}$`, 'i') },
+        _id: { $ne: seq._id }
+      });
+      if (existingName) {
+        throw AppError.badRequest('A sequence with this name already exists.');
+      }
+      seq.name = dto.name;
+    }
     if (dto.description !== undefined) seq.description = dto.description ?? undefined;
     if (dto.sending_window)            Object.assign(seq.sending_window, dto.sending_window);
     if (dto.stop_on_reply  !== undefined) seq.stop_on_reply  = dto.stop_on_reply;
@@ -211,10 +231,11 @@ export class SequenceService {
       );
     }
 
-    // Hard delete sequence + all its steps
+    // Hard delete sequence + all its steps + all its contacts
     await Promise.all([
       Sequence.deleteOne({ _id: sequenceId }),
       SequenceStep.deleteMany({ sequence_id: sequenceId }),
+      SequenceContact.deleteMany({ sequence_id: sequenceId }),
     ]);
 
     logger.info('Sequence hard-deleted', { sequenceId, userId });
@@ -241,18 +262,15 @@ export class SequenceService {
       );
     }
 
-    // Guard: must have at least one email step to activate
+    // Guard: must have at least one email step to activate, and all must be valid
+    // Guard: use getSequenceIntegrity for comprehensive check
     if (to === SequenceStatus.ACTIVE) {
-      const emailStepCount = await SequenceStep.countDocuments({
-        sequence_id: sequenceId,
-        type:        StepType.EMAIL,
-        is_active:   true,
-      });
-
-      if (emailStepCount === 0) {
+      const integrity = await this.getSequenceIntegrity(userId, sequenceId);
+      if (!integrity.is_valid) {
+        // Collect a single readable error string of the first few issues
+        const firstIssue = integrity.issues[0];
         throw AppError.badRequest(
-          'Cannot activate a sequence with no email steps. ' +
-          'Add at least one email step first.'
+          `Cannot activate sequence due to integrity issues: Step ${firstIssue.step_index + 1} has ${firstIssue.issues.join(', ')}`
         );
       }
 
@@ -273,6 +291,36 @@ export class SequenceService {
     // If activating, bump active contacts' next_send_at so scheduler picks them up
     if (to === SequenceStatus.ACTIVE && from !== SequenceStatus.ACTIVE) {
       const now = new Date();
+      const adjustedNextSendAt = calculateNextValidSlot(now, seq.sending_window as any);
+      
+      // Log before values
+      const beforeContacts = await SequenceContact.find({
+        sequence_id: sequenceId,
+        status: 'active',
+        $or: [
+          { next_send_at: { $lte: now } },
+          { next_send_at: null }
+        ]
+      }).select('_id next_send_at').lean();
+
+      logger.info('DEBUG ACTIVATION: Before values', {
+        contacts: beforeContacts.map(c => ({
+          contactId: c._id.toString(),
+          next_send_at: c.next_send_at?.toISOString() ?? null
+        }))
+      });
+
+      // Log activation changes including sequenceId, previous_next_send_at, adjusted_next_send_at, sending_window
+      for (const contact of beforeContacts) {
+        logger.info('Sequence activation contact next_send_at adjustment', {
+          sequenceId: sequenceId.toString(),
+          contactId: contact._id.toString(),
+          previous_next_send_at: contact.next_send_at?.toISOString() ?? null,
+          adjusted_next_send_at: adjustedNextSendAt.toISOString(),
+          sending_window: seq.sending_window,
+        });
+      }
+
       await SequenceContact.updateMany(
         { 
           sequence_id: sequenceId, 
@@ -282,8 +330,21 @@ export class SequenceService {
             { next_send_at: null }
           ]
         },
-        { $set: { next_send_at: now } }
+        { $set: { next_send_at: adjustedNextSendAt } }
       );
+
+      // Log after values
+      const afterContacts = await SequenceContact.find({
+        _id: { $in: beforeContacts.map(c => c._id) }
+      }).select('_id next_send_at').lean();
+
+      logger.info('DEBUG ACTIVATION: After values', {
+        contacts: afterContacts.map(c => ({
+          contactId: c._id.toString(),
+          next_send_at: c.next_send_at?.toISOString() ?? null
+        }))
+      });
+
       logger.info('Bumped next_send_at for active contacts upon sequence activation', { sequenceId });
     }
 
@@ -359,6 +420,11 @@ export class SequenceService {
       stepData.condition = (dto as any).condition;
     }
 
+    logger.info('DEBUG: addStep payload from frontend', {
+      receivedDto: dto,
+      mappedStepData: stepData
+    });
+
     const step = await SequenceStep.create(stepData);
 
     // Update denormalized step_count on Sequence
@@ -429,6 +495,11 @@ export class SequenceService {
     if ((dto as any).delay_days  !== undefined) step.delay_days  = (dto as any).delay_days;
     if ((dto as any).delay_hours !== undefined) step.delay_hours = (dto as any).delay_hours;
     if ((dto as any).condition   !== undefined) step.condition   = (dto as any).condition;
+
+    logger.info('DEBUG: updateStep payload from frontend', {
+      receivedDto: dto,
+      stepBeforeSave: step.toObject()
+    });
 
     await step.save();
 
@@ -539,6 +610,217 @@ export class SequenceService {
     });
 
     return step;
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  //  ACTIVATION SAFETY
+  // ════════════════════════════════════════════════════════════════
+
+  async getSequenceIntegrity(userId: string, sequenceId: string) {
+    const seq = await assertOwned(userId, sequenceId);
+    
+    const steps = await SequenceStep.find({ sequence_id: sequenceId }).sort({ step_index: 1 }).lean();
+    
+    // Fetch related entities to ensure they exist
+    const templates = await Template.find({ user_id: userId }).select('_id is_archived').lean();
+    const activeTemplates = new Set(templates.filter(t => !t.is_archived).map(t => t._id.toString()));
+    
+    const connections = await EmailConnection.find({ user_id: userId }).select('_id status').lean();
+    const activeConnections = new Set(connections.filter(c => c.status === ConnectionStatus.ACTIVE).map(c => c._id.toString()));
+
+    const issues: { step_id: string, step_index: number, issues: string[] }[] = [];
+
+    // Verify ordering
+    let expectedIndex = 0;
+
+    for (const step of steps) {
+      const stepIssues: string[] = [];
+
+      if (step.step_index !== expectedIndex) {
+        stepIssues.push('invalid_step_ordering');
+      }
+      expectedIndex++;
+
+      if (step.type === StepType.EMAIL) {
+        if (!step.template_id) {
+          stepIssues.push('missing_template_id');
+        } else if (!activeTemplates.has(step.template_id.toString())) {
+          stepIssues.push('missing_template_reference'); // Not found or archived
+        }
+
+        const connId = (step as any).email_connection_id || seq.email_connection_id;
+        if (!connId) {
+          stepIssues.push('missing_email_connection_id');
+        } else if (!activeConnections.has(connId.toString())) {
+          stepIssues.push('missing_sender_accounts');
+        }
+      }
+
+      if (stepIssues.length > 0) {
+        issues.push({
+          step_id: step._id.toString(),
+          step_index: step.step_index,
+          issues: stepIssues
+        });
+      }
+    }
+
+    if (steps.filter(s => s.type === StepType.EMAIL && s.is_active).length === 0) {
+      issues.push({
+        step_id: 'global',
+        step_index: -1,
+        issues: ['no_active_email_steps']
+      });
+    }
+
+    return {
+      is_valid: issues.length === 0,
+      issues
+    };
+  }
+
+  async preActivationCheck(userId: string, sequenceId: string) {
+    const seq = await assertOwned(userId, sequenceId);
+    
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    let is_first_campaign = false;
+    let senderEmail = 'Unknown';
+    let firstSubject = 'N/A';
+
+    // 1. Fetch related data
+    const steps = await SequenceStep.find({ sequence_id: sequenceId, is_active: true }).sort({ step_index: 1 }).lean();
+    
+    // Launchable statuses: contacts that can be processed (or resumed) after activation
+    const launchableStatuses = ['active', 'paused'];
+    const launchableContactsCount = await SequenceContact.countDocuments({ 
+      sequence_id: sequenceId, 
+      status: { $in: launchableStatuses } 
+    });
+
+    // 2. Validate Sequence
+    if (seq.status === SequenceStatus.ARCHIVED) {
+      errors.push('Sequence is archived and cannot be activated.');
+    }
+    
+    // Check integrity
+    const integrity = await this.getSequenceIntegrity(userId, sequenceId);
+    if (!integrity.is_valid) {
+      for (const issue of integrity.issues) {
+        if (issue.step_id === 'global' && issue.issues.includes('no_active_email_steps')) {
+          errors.push('Sequence contains no active email steps.');
+        } else {
+          for (const type of issue.issues) {
+            if (type === 'missing_template_id') errors.push(`Step ${issue.step_index + 1} is missing a template.`);
+            if (type === 'missing_email_connection_id') errors.push(`Step ${issue.step_index + 1} is missing a sender account.`);
+            if (type === 'missing_template_reference') errors.push(`Step ${issue.step_index + 1} refers to an invalid or archived template.`);
+            if (type === 'missing_sender_accounts') errors.push(`Step ${issue.step_index + 1} refers to an invalid or inactive sender account.`);
+            if (type === 'invalid_step_ordering') errors.push(`Step ${issue.step_index + 1} has an invalid ordering index.`);
+          }
+        }
+      }
+    }
+
+    // 3. Validate Contacts
+    if (launchableContactsCount === 0) {
+      errors.push('Sequence has no launchable enrolled contacts.');
+    } else if (launchableContactsCount >= 50) {
+      warnings.push(`This sequence will email ${launchableContactsCount} recipients.`);
+    }
+
+    const emailSteps = steps.filter(s => s.type === StepType.EMAIL);
+
+    // 4. Sender Summary
+    for (const emailStep of emailSteps) {
+      const connId = (emailStep as any).email_connection_id || seq.email_connection_id;
+      if (connId) {
+        const conn = await EmailConnection.findOne({ _id: connId, user_id: userId });
+        if (conn && conn.status === ConnectionStatus.ACTIVE) {
+          // Track details for the summary using the first email step's sender
+          if (emailStep === emailSteps[0]) {
+            senderEmail = conn.from_email;
+            if (conn.total_sent === 0) {
+              is_first_campaign = true;
+            }
+          }
+        }
+      }
+    }
+
+    const firstEmailStep = emailSteps[0];
+    if (firstEmailStep) {
+
+      if (!firstEmailStep.template_id) {
+        errors.push('First email step is missing a template.');
+      } else {
+        const template = await Template.findOne({ _id: firstEmailStep.template_id, user_id: userId, is_archived: false });
+        if (!template) {
+          errors.push('Template for the first email step is missing or archived.');
+        } else {
+          firstSubject = firstEmailStep.subject_override || template.subject;
+          const bodyHtml = firstEmailStep.body_html_override || template.body_html;
+          
+          // Warning: Test Subject
+          const subjLower = firstSubject.toLowerCase().trim();
+          if (subjLower.length < 5 || ['test', 'testing', 'hi', 'hello'].includes(subjLower)) {
+            warnings.push('Subject appears to be test content.');
+          }
+
+          // Warning: Test Body
+          if (/test|testing|hello world|sample email/i.test(bodyHtml)) {
+            warnings.push('Template appears to contain test content.');
+          }
+
+          // Warning: Missing Personalization
+          if (!/\{\{.*\}\}/.test(bodyHtml)) {
+            warnings.push('Template contains no personalization fields.');
+          }
+
+          // Phase 2: Dry Run Template Validation
+          const firstContact = await SequenceContact.findOne({ 
+            sequence_id: sequenceId, 
+            status: { $in: launchableStatuses } 
+          }).lean();
+          if (firstContact) {
+            const rendered = renderEmail({
+              subject: firstSubject,
+              body_html: bodyHtml
+            }, {
+              first_name: firstContact.contact_first_name,
+              last_name: firstContact.contact_last_name,
+              company: firstContact.contact_company,
+              email: firstContact.contact_email,
+              custom_variables: firstContact.custom_variables || {}
+            }, {
+              sequenceContactId: firstContact._id.toString(),
+              sendingLogId: 'dry-run',
+              messageId: 'dry-run',
+              trackOpens: false,
+              trackClicks: false
+            });
+
+            // Check for unresolved square brackets [industry], etc.
+            if (/\[\w+\]/.test(rendered.body_html) || /\[\w+\]/.test(rendered.subject)) {
+              warnings.push('Template contains unresolved merge tags.');
+            }
+          }
+        }
+      }
+    }
+
+    return {
+      valid: errors.length === 0,
+      warnings,
+      errors,
+      is_first_campaign,
+      summary: {
+        contacts: launchableContactsCount,
+        steps: steps.length,
+        sender: senderEmail,
+        first_subject: firstSubject,
+        estimated_sends_today: Math.min(launchableContactsCount, seq.daily_sending_limit || launchableContactsCount)
+      }
+    };
   }
 }
 

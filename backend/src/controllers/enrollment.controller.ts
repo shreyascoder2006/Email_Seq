@@ -32,6 +32,8 @@ export async function enrollContacts(
         failed:    result.failed,
         errors:    result.errors,
         contacts:  result.contacts,
+        isOutsideWindow: result.isOutsideWindow,
+        nextAvailableWindow: result.nextAvailableWindow,
       },
     });
   } catch (err) { next(err); }
@@ -76,5 +78,53 @@ export async function patchEnrolledContact(
       contact,
       `Contact ${contact.status === 'paused' ? 'paused' : 'resumed'} successfully`
     );
+  } catch (err) { next(err); }
+}
+
+// ─── POST /api/sequences/:id/contacts/bulk-delete ─────────────────
+export async function bulkDeleteContacts(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const result = await enrollmentService.bulkDelete(
+      uid(req),
+      req.params.id,
+      req.body
+    );
+    sendSuccess(res, result, `Successfully deleted ${result.deleted} contacts`);
+  } catch (err) { next(err); }
+}
+
+// ─── PATCH /api/sequences/:id/contacts/pause ─────────────────────
+export async function bulkPauseContacts(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const result = await enrollmentService.bulkPause(
+      uid(req),
+      req.params.id,
+      req.body
+    );
+    sendSuccess(res, result, `Successfully paused ${result.paused} contacts`);
+  } catch (err) { next(err); }
+}
+
+// ─── PATCH /api/sequences/:id/contacts/resume ────────────────────
+export async function bulkResumeContacts(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const result = await enrollmentService.bulkResume(
+      uid(req),
+      req.params.id,
+      req.body
+    );
+    sendSuccess(res, result, `Successfully resumed ${result.resumed} contacts`);
   } catch (err) { next(err); }
 }

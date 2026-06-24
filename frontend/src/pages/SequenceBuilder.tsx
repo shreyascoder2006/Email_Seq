@@ -7,7 +7,9 @@ import { LoadingSpinner } from '../components/ui/LoadingSpinner';
 import { SortableStepList } from '../components/sequences/builder/SortableStepList';
 import { StepModal } from '../components/sequences/builder/StepModal';
 import { ContactsTab } from '../components/sequences/contacts/ContactsTab';
+import { ActivationModal } from '../components/sequences/activation/ActivationModal';
 import { sequenceService } from '../services/sequence.service';
+import type { PreActivationCheckResponse } from '../services/sequence.service';
 import { templateService } from '../services/template.service';
 import { emailAccountService } from '../services/emailAccount.service';
 import type { Sequence, SequenceStep, Template, EmailConnection, CreateStepDto, UpdateStepDto, StepType } from '../types';
@@ -26,6 +28,11 @@ export const SequenceBuilder: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalStepType, setModalStepType] = useState<StepType>('email');
   const [editingStep, setEditingStep] = useState<SequenceStep | null>(null);
+
+  // Activation Modal State
+  const [isActivationModalOpen, setIsActivationModalOpen] = useState(false);
+  const [activationCheckResult, setActivationCheckResult] = useState<PreActivationCheckResponse | null>(null);
+  const [isActivating, setIsActivating] = useState(false);
 
   const fetchData = useCallback(async () => {
     if (!id) return;
@@ -63,6 +70,25 @@ export const SequenceBuilder: React.FC = () => {
     } catch (err: any) {
       toast.error(err.response?.data?.message || 'Failed to update status');
     }
+  };
+
+  const initiateActivation = async () => {
+    if (!id) return;
+    try {
+      setIsActivating(true);
+      const result = await sequenceService.preActivationCheck(id);
+      setActivationCheckResult(result);
+      setIsActivationModalOpen(true);
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'Failed to run pre-activation check');
+    } finally {
+      setIsActivating(false);
+    }
+  };
+
+  const confirmActivation = async () => {
+    setIsActivationModalOpen(false);
+    await handleUpdateStatus('active');
   };
 
   const handleReorder = async (newSteps: SequenceStep[]) => {
@@ -159,8 +185,8 @@ export const SequenceBuilder: React.FC = () => {
               <Pause className="mr-2 h-4 w-4" /> Pause Sequence
             </Button>
           ) : (
-            <Button onClick={() => handleUpdateStatus('active')} disabled={steps.filter(s => s.type === 'email').length === 0}>
-              <Play className="mr-2 h-4 w-4" /> Activate Sequence
+            <Button onClick={initiateActivation} disabled={steps.filter(s => s.type === 'email').length === 0 || isActivating}>
+              {isActivating ? <LoadingSpinner size={16} className="mr-2" /> : <Play className="mr-2 h-4 w-4" />} Activate Sequence
             </Button>
           )}
         </div>
@@ -251,6 +277,16 @@ export const SequenceBuilder: React.FC = () => {
           subject_override: editingStep.subject_override,
         } : undefined}
       />
+
+      {sequence && (
+        <ActivationModal
+          isOpen={isActivationModalOpen}
+          onClose={() => setIsActivationModalOpen(false)}
+          onConfirm={confirmActivation}
+          sequence={sequence}
+          checkResult={activationCheckResult}
+        />
+      )}
     </div>
   );
 };

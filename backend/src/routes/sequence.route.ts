@@ -13,11 +13,16 @@ import {
   reorderSteps,
   toggleStep,
   getSequenceStats,
+  preActivationCheck,
+  getSequenceIntegrity,
 } from '../controllers/sequence.controller';
 import {
   enrollContacts,
   listEnrolledContacts,
   patchEnrolledContact,
+  bulkDeleteContacts,
+  bulkPauseContacts,
+  bulkResumeContacts,
 } from '../controllers/enrollment.controller';
 import { authenticate }  from '../middleware/auth';
 import { validate }      from '../middleware/validate';
@@ -37,6 +42,7 @@ import {
   ListContactsQuerySchema,
   PatchContactStatusSchema,
   ContactParamSchema,
+  BulkContactActionSchema,
 } from '../validators/enrollment.validator';
 
 const router = Router();
@@ -93,6 +99,16 @@ router.get(
 );
 
 /**
+ * GET /api/sequences/:id/integrity
+ * Returns integrity checks for sequence steps
+ */
+router.get(
+  '/:id/integrity',
+  validate(IdParamSchema, 'params'),
+  getSequenceIntegrity
+);
+
+/**
  * GET /api/sequences/:id
  * Returns { sequence, steps } in one call
  */
@@ -144,6 +160,16 @@ router.patch(
   validate(IdParamSchema, 'params'),
   validate(TransitionStatusSchema, 'body'),
   transitionSequenceStatus
+);
+
+/**
+ * POST /api/sequences/:id/pre-activation-check
+ * Run dry-run validation and return warnings/errors before activation
+ */
+router.post(
+  '/:id/pre-activation-check',
+  validate(IdParamSchema, 'params'),
+  preActivationCheck
 );
 
 // ════════════════════════════════════════════════════════════════
@@ -270,6 +296,39 @@ router.get(
   validate(IdParamSchema, 'params'),
   validate(ListContactsQuerySchema, 'query'),
   listEnrolledContacts
+);
+
+/**
+ * POST /api/sequences/:id/contacts/bulk-delete
+ * Bulk delete contacts from sequence
+ */
+router.post(
+  '/:id/contacts/bulk-delete',
+  validate(IdParamSchema, 'params'),
+  validate(BulkContactActionSchema, 'body'),
+  bulkDeleteContacts
+);
+
+/**
+ * PATCH /api/sequences/:id/contacts/pause
+ * Bulk pause contacts
+ */
+router.patch(
+  '/:id/contacts/pause',
+  validate(IdParamSchema, 'params'),
+  validate(BulkContactActionSchema, 'body'),
+  bulkPauseContacts
+);
+
+/**
+ * PATCH /api/sequences/:id/contacts/resume
+ * Bulk resume contacts
+ */
+router.patch(
+  '/:id/contacts/resume',
+  validate(IdParamSchema, 'params'),
+  validate(BulkContactActionSchema, 'body'),
+  bulkResumeContacts
 );
 
 /**

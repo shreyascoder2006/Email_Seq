@@ -20,7 +20,9 @@ export interface SendingWindow {
   timezone: string;            // "Asia/Kolkata"
   schedule: SendingSchedule;
   start_hour: number;          // 9  → 9 AM
+  start_minute: number;        // 0 or 30
   end_hour: number;            // 17 → 5 PM
+  end_minute: number;          // 0 or 30
   custom_days?: number[];      // 0=Sun, 1=Mon ... 6=Sat
 }
 
@@ -68,6 +70,11 @@ export interface ISequence extends Document {
   is_archived: boolean;
   created_at:  Date;
   updated_at:  Date;
+
+  // Integrity Protection
+  needs_attention: boolean;
+  integrity_error: boolean;
+  last_integrity_error: string | null;
 }
 
 // ─── Sub-schemas ───────────────────────────────────────────────────
@@ -80,7 +87,9 @@ const SendingWindowSchema = new Schema<SendingWindow>(
       default: SendingSchedule.WEEKDAYS_ONLY,
     },
     start_hour:  { type: Number, min: 0, max: 23, default: 9 },
+    start_minute:{ type: Number, min: 0, max: 59, default: 0 },
     end_hour:    { type: Number, min: 0, max: 23, default: 17 },
+    end_minute:  { type: Number, min: 0, max: 59, default: 0 },
     custom_days: { type: [Number], default: undefined },
   },
   { _id: false }
@@ -120,7 +129,7 @@ const SequenceSchema = new Schema<ISequence>(
     status:      {
       type: String,
       enum: Object.values(SequenceStatus),
-      default: SequenceStatus.DRAFT,
+      default: SequenceStatus.PAUSED,
       index: true,
     },
 
@@ -142,6 +151,11 @@ const SequenceSchema = new Schema<ISequence>(
     step_count: { type: Number, default: 0, min: 0 },
 
     is_archived: { type: Boolean, default: false },
+
+    // Integrity Protection
+    needs_attention: { type: Boolean, default: false },
+    integrity_error: { type: Boolean, default: false },
+    last_integrity_error: { type: String, default: null },
   },
   {
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },

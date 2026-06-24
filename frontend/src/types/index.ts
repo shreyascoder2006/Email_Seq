@@ -85,6 +85,9 @@ export interface Sequence {
   reserved_limit_phase1: number;
   warmup_percentage?: number;
   created_at: string;
+  needs_attention?: boolean;
+  integrity_error?: boolean;
+  last_integrity_error?: string | null;
   stats: {
     total_contacts: number;
     active_contacts: number;
@@ -93,6 +96,12 @@ export interface Sequence {
     total_clicks: number;
     total_replies: number;
     total_bounces: number;
+  };
+  sending_window?: {
+    days: number[];
+    start_time: string;
+    end_time: string;
+    timezone: string;
   };
 }
 
@@ -107,7 +116,9 @@ export interface CreateSequenceDto {
     timezone: string;
     schedule?: string;
     start_hour?: number;
+    start_minute?: number;
     end_hour?: number;
+    end_minute?: number;
     custom_days?: number[];
   };
   is_wizard?: boolean;
@@ -155,6 +166,8 @@ export interface SequenceStep {
   subject_override?: string;
   body_html_override?: string;
   body_text_override?: string;
+  cc?: string[];
+  bcc?: string[];
   track_opens?: boolean;
   track_clicks?: boolean;
   is_active: boolean;
@@ -167,6 +180,10 @@ export interface CreateStepDto {
   template_id?: string;
   email_connection_id?: string;
   subject_override?: string;
+  body_html_override?: string;
+  body_text_override?: string;
+  cc?: string[];
+  bcc?: string[];
   track_opens?: boolean;
   track_clicks?: boolean;
 }
@@ -204,6 +221,7 @@ export interface SequenceContact {
   has_replied: boolean;
   enrolled_at: string;
   last_error?: string;
+  custom_variables?: Record<string, string>;
 }
 
 export interface EnrollContactItem {
@@ -218,4 +236,120 @@ export interface EnrollContactsDto {
   contacts: EnrollContactItem[];
   start_at?: string;
   skip_existing?: boolean;
+}
+
+// ─── Import Lists ──────────────────────────────────────────────────
+
+export interface FieldMapping {
+  csv_column:   string;  // original CSV header
+  system_field: string;  // mapped key (e.g. "first_name" or custom "pain_point")
+  merge_tag:    string;  // e.g. "{{first_name}}"
+  is_system:    boolean; // true = built-in field
+}
+
+export interface ImportList {
+  _id:              string;
+  user_id:          string;
+  name:             string;
+  description:      string;
+  filename:         string;
+  original_headers: string[];
+  field_mappings:   FieldMapping[];
+  row_count:        number;
+  valid_count:      number;
+  duplicate_count:  number;
+  error_count:      number;
+  status:           'pending' | 'mapped' | 'imported';
+  created_at:       string;
+  updated_at:       string;
+}
+
+export interface MappedContactData {
+  email:            string;
+  first_name?:      string;
+  last_name?:       string;
+  company?:         string;
+  custom_variables: Record<string, string>;
+}
+
+export interface ImportedContact {
+  _id:               string;
+  import_list_id:    string;
+  row_data:          Record<string, string>;
+  mapped_data:       MappedContactData;
+  row_number:        number;
+  is_duplicate:      boolean;
+  validation_errors: string[];
+  created_at:        string;
+}
+
+export interface ParsePreviewResult {
+  headers:        string[];
+  preview_rows:   Record<string, string>[];
+  all_rows:       Record<string, string>[];
+  total_rows:     number;
+  field_mappings: FieldMapping[];
+}
+
+export interface ImportSaveResult {
+  import_list:   ImportList;
+  total:         number;
+  valid:         number;
+  duplicates:    number;
+  errors:        number;
+  error_details: Array<{ row: number; email: string; reason: string }>;
+}
+
+export interface CreateImportListDto {
+  name:             string;
+  filename:         string;
+  original_headers: string[];
+  field_mappings:   FieldMapping[];
+  rows:             Record<string, string>[];
+}
+
+export interface EnrollImportResult {
+  import_list_id: string;
+  sequence_id:    string;
+  enrolled:       number;
+  skipped:        number;
+  failed:         number;
+  isOutsideWindow?: boolean;
+  nextAvailableWindow?: string;
+  errors:         Array<{ email: string; reason: string }>;
+}
+
+export interface SenderAnalyticsResponse {
+  connectionId: string;
+  email: string;
+  label: string;
+  status: string;
+  sent: number;
+  opens: number;
+  replies: number;
+  bounces: number;
+  dailyVolume: number;
+  dailyLimit: number;
+  openRate: number;
+  replyRate: number;
+  bounceRate: number;
+  limitUsagePercent: number;
+  health: 'excellent' | 'healthy' | 'warning' | 'critical';
+  lastSentAt?: string;
+}
+
+export interface SequenceWithSteps {
+  sequence: Sequence;
+  steps: SequenceStep[];
+}
+
+export interface StepIntegrityIssue {
+  step_id: string;
+  step_index: number;
+  issues: string[];
+}
+
+export interface SequenceIntegrity {
+  is_valid: boolean;
+  issues: StepIntegrityIssue[];
 }

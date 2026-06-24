@@ -10,4 +10,17 @@
 
 @layer components {
   /* Shared standard button styles if needed, though mostly handled by clsx in components */
+  .tiptap-content p { @apply my-2; }
+  .tiptap-content ul { @apply list-disc list-inside my-2; }
+  .tiptap-content ol { @apply list-decimal list-inside my-2; }
+  .tiptap-content blockquote { @apply border-l-4 border-gray-300 pl-4 italic my-2; }
+  .tiptap-content a { @apply text-indigo-600 underline cursor-pointer; }
+  .tiptap-content strong { @apply font-bold; }
+  .tiptap p.is-editor-empty:first-child::before {
+    content: attr(data-placeholder);
+    float: left;
+    color: #9ca3af;
+    pointer-events: none;
+    height: 0;
+  }
 }

@@ -5,6 +5,7 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { Button } from '../components/ui/Button';
 import { LoadingSpinner } from '../components/ui/LoadingSpinner';
 import { SequenceTable } from '../components/sequences/SequenceTable';
+import { CreateSequenceModal } from '../components/sequences/CreateSequenceModal';
 import { sequenceService } from '../services/sequence.service';
 import type { Sequence } from '../types';
 
@@ -13,6 +14,7 @@ export const Sequences: React.FC = () => {
   const [sequences, setSequences] = useState<Sequence[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
 
   // Pagination & Filtering
   const [page, setPage] = useState(1);
@@ -88,7 +90,7 @@ export const Sequences: React.FC = () => {
           <h2 className="text-2xl font-bold text-gray-900">Sequences</h2>
           <p className="text-gray-500">Manage your automated email sequences.</p>
         </div>
-        <Button onClick={() => navigate('/sequences/create')}>Create Sequence</Button>
+        <Button id="btn-create-sequence" onClick={() => setIsCreateModalOpen(true)}>Create Sequence</Button>
       </div>
 
       <div className="flex flex-col sm:flex-row gap-4 items-center justify-between bg-white p-4 rounded-xl shadow-sm border border-gray-200">
@@ -147,7 +149,7 @@ export const Sequences: React.FC = () => {
             }
             action={
               !debouncedSearch && !statusFilter ? (
-                <Button variant="outline" onClick={() => navigate('/sequences/create')}>
+                <Button variant="outline" onClick={() => setIsCreateModalOpen(true)}>
                   Create your first sequence
                 </Button>
               ) : (
@@ -162,8 +164,8 @@ export const Sequences: React.FC = () => {
         <>
           <SequenceTable
             sequences={sequences}
-            onView={(id) => navigate(`/sequences/${id}/builder`)}
-            onEdit={(id) => navigate(`/sequences/${id}/builder`)}
+            onView={(id) => navigate(`/sequences/${id}/builder-v2`)}
+            onEdit={(id) => navigate(`/sequences/${id}/builder-v2`)}
             onUpdateStatus={handleUpdateStatus}
             onDelete={handleDelete}
           />
@@ -206,6 +208,11 @@ export const Sequences: React.FC = () => {
           )}
         </>
       )}
+
+      <CreateSequenceModal
+        isOpen={isCreateModalOpen}
+        onClose={() => setIsCreateModalOpen(false)}
+      />
     </div>
   );
 };

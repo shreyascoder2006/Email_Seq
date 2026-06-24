@@ -7,16 +7,18 @@ import {
   Mail,
   BarChart2,
   Settings,
+  Upload,
 } from 'lucide-react';
 import { cn } from '../utils/cn';
 
 const navItems = [
-  { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
-  { name: 'Sequences', href: '/sequences', icon: Send },
-  { name: 'Templates', href: '/templates', icon: FileText },
+  { name: 'Dashboard',    href: '/dashboard',     icon: LayoutDashboard },
+  { name: 'Sequences',    href: '/sequences',     icon: Send },
+  { name: 'Templates',    href: '/templates',     icon: FileText },
+  { name: 'Import Lists', href: '/import-lists',  icon: Upload },
   { name: 'Email Accounts', href: '/email-accounts', icon: Mail },
-  { name: 'Analytics', href: '/analytics', icon: BarChart2 },
-  { name: 'Settings', href: '/settings', icon: Settings },
+  { name: 'Analytics',   href: '/analytics',     icon: BarChart2 },
+  { name: 'Settings',    href: '/settings',      icon: Settings },
 ];
 
 export const Sidebar: React.FC = () => {

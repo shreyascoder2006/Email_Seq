@@ -1,6 +1,6 @@
 import nodemailer from 'nodemailer';
 import { Types } from 'mongoose';
-import { EmailConnection, IEmailConnection, ConnectionStatus } from '../models/EmailConnection';
+import { EmailConnection, IEmailConnection, ConnectionStatus, SmtpEncryption, ProviderType } from '../models/EmailConnection';
 import { encrypt, decrypt } from '../utils/crypto';
 import { AppError } from '../utils/AppError';
 import logger from '../config/logger';
@@ -8,6 +8,9 @@ import {
   CreateEmailConnectionDto,
   UpdateEmailConnectionDto,
 } from '../validators/emailConnection.validator';
+import { env } from '../config/env';
+import { Sequence, SequenceStatus } from '../models/Sequence';
+import { SequenceStep } from '../models/SequenceStep';
 
 // ─── Types ─────────────────────────────────────────────────────────
 
@@ -80,7 +83,7 @@ export class EmailConnectionService {
       smtp_port:         dto.smtp_port,
       smtp_encryption:   dto.smtp_encryption,
       smtp_username:     dto.smtp_username,
-      smtp_password_enc: encrypt(dto.smtp_password.replace(/\s+/g, '')),
+      smtp_password_enc: dto.smtp_password ? encrypt(dto.smtp_password.replace(/\s+/g, '')) : undefined,
 
       // IMAP (optional)
       imap_host:         dto.imap_host         || undefined,
@@ -194,7 +197,44 @@ export class EmailConnectionService {
   }
 
   // ── DELETE ────────────────────────────────────────────────────────
-  async delete(userId: string, connectionId: string): Promise<void> {
+  async delete(userId: string, connectionId: string): Promise<{ success: boolean; message?: string; affected_sequences?: string[] }> {
+    // 1. Scan for references in Sequences (active/paused/draft)
+    const activeSequences = await Sequence.find({
+      user_id: userId,
+      email_connection_id: connectionId,
+      status: { $in: [SequenceStatus.ACTIVE, SequenceStatus.PAUSED, SequenceStatus.DRAFT] }
+    }).select('_id name').lean();
+
+    // 2. Scan for references in SequenceSteps (for any sequence that is active/paused/draft)
+    const affectedStepSequences = await SequenceStep.find({
+      user_id: userId,
+      email_connection_id: connectionId,
+    }).select('sequence_id').lean();
+
+    const sequenceIdsFromSteps = affectedStepSequences.map(s => s.sequence_id.toString());
+    
+    // Filter these step references by checking if their parent sequence is active/paused/draft
+    let stepSequences: Array<{_id: Types.ObjectId, name: string}> = [];
+    if (sequenceIdsFromSteps.length > 0) {
+       stepSequences = await Sequence.find({
+         _id: { $in: sequenceIdsFromSteps },
+         status: { $in: [SequenceStatus.ACTIVE, SequenceStatus.PAUSED, SequenceStatus.DRAFT] }
+       }).select('_id name').lean();
+    }
+
+    // Combine and deduplicate
+    const allAffected = [...activeSequences, ...stepSequences];
+    const uniqueAffectedMap = new Map(allAffected.map(seq => [seq._id.toString(), seq]));
+    const uniqueAffected = Array.from(uniqueAffectedMap.values());
+
+    if (uniqueAffected.length > 0) {
+      return {
+        success: false,
+        message: 'Email connection is currently used by active sequences.',
+        affected_sequences: uniqueAffected.map(seq => seq._id.toString())
+      };
+    }
+
     const result = await EmailConnection.deleteOne({
       _id: connectionId,
       user_id: userId,
@@ -205,6 +245,7 @@ export class EmailConnectionService {
     }
 
     logger.info('EmailConnection deleted', { connectionId, userId });
+    return { success: true };
   }
 
   // ── TEST CONNECTION ───────────────────────────────────────────────
@@ -256,15 +297,29 @@ export class EmailConnectionService {
   private async _testSmtp(doc: IEmailConnection): Promise<SmtpTestResult> {
     const start = Date.now();
     try {
-      const rawPassword = decrypt(doc.smtp_password_enc);
+      let authConfig: any;
+      if (doc.auth_method === 'oauth2') {
+        const refreshToken = decrypt(doc.oauth_refresh_token_enc!);
+        authConfig = {
+          type: 'OAuth2',
+          user: doc.from_email,
+          clientId: doc.provider === 'gmail' ? env.GOOGLE_CLIENT_ID : env.MICROSOFT_CLIENT_ID,
+          clientSecret: doc.provider === 'gmail' ? env.GOOGLE_CLIENT_SECRET : env.MICROSOFT_CLIENT_SECRET,
+          refreshToken,
+        };
+      } else {
+        const rawPassword = decrypt(doc.smtp_password_enc!);
+        authConfig = {
+          user: doc.smtp_username,
+          pass: rawPassword,
+        };
+      }
+
       const transport = nodemailer.createTransport({
         host: doc.smtp_host,
         port: doc.smtp_port,
         secure: doc.smtp_encryption === 'ssl',
-        auth: {
-          user: doc.smtp_username,
-          pass: rawPassword,
-        },
+        auth: authConfig,
         connectionTimeout: 10_000,
         greetingTimeout:   8_000,
       });
@@ -338,7 +393,7 @@ export class EmailConnectionService {
   async getDecryptedCredentials(
     userId: string,
     connectionId: string
-  ): Promise<{ smtpPassword: string; imapPassword?: string }> {
+  ): Promise<{ smtpPassword?: string; imapPassword?: string; oauthRefreshToken?: string; authMethod: 'smtp' | 'oauth2' }> {
     const doc = await EmailConnection.findOne({
       _id: connectionId,
       user_id: userId,
@@ -347,10 +402,12 @@ export class EmailConnectionService {
     if (!doc) throw AppError.notFound('Email connection');
 
     return {
-      smtpPassword: decrypt(doc.smtp_password_enc),
+      authMethod: doc.auth_method,
+      smtpPassword: doc.smtp_password_enc ? decrypt(doc.smtp_password_enc) : undefined,
       imapPassword: doc.imap_password_enc
         ? decrypt(doc.imap_password_enc)
         : undefined,
+      oauthRefreshToken: doc.oauth_refresh_token_enc ? decrypt(doc.oauth_refresh_token_enc) : undefined,
     };
   }
 }

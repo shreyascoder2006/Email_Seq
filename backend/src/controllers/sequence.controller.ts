@@ -104,6 +104,42 @@ export async function transitionSequenceStatus(
   } catch (err) { next(err); }
 }
 
+/**
+ * POST /api/sequences/:id/pre-activation-check
+ * Validates if the sequence is safe to activate.
+ */
+export async function preActivationCheck(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const result = await sequenceService.preActivationCheck(
+      uid(req),
+      req.params.id
+    );
+    sendSuccess(res, result, 'Pre-activation check completed');
+  } catch (err) { next(err); }
+}
+
+/**
+ * GET /api/sequences/:id/integrity
+ * Returns integrity checks for sequence steps
+ */
+export async function getSequenceIntegrity(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const integrity = await sequenceService.getSequenceIntegrity(
+      uid(req),
+      req.params.id
+    );
+    sendSuccess(res, integrity, 'Sequence integrity retrieved');
+  } catch (err) { next(err); }
+}
+
 // ════════════════════════════════════════════════════════════════
 //  STEP CONTROLLERS
 // ════════════════════════════════════════════════════════════════

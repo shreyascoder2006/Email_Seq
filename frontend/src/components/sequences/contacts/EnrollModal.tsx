@@ -6,6 +6,8 @@ import { Modal } from '../../ui/Modal';
 import { Button } from '../../ui/Button';
 import { Input } from '../../ui/Input';
 import { enrollmentService } from '../../../services/enrollment.service';
+import { importService } from '../../../services/import.service';
+import type { ImportList } from '../../../types';
 import { toast } from 'react-hot-toast';
 
 interface EnrollModalProps {
@@ -22,22 +24,35 @@ const singleContactSchema = z.object({
 });
 
 export const EnrollModal: React.FC<EnrollModalProps> = ({ isOpen, onClose, sequenceId, onSuccess }) => {
-  const [activeTab, setActiveTab] = useState<'single' | 'bulk'>('bulk');
+  const [activeTab, setActiveTab] = useState<'single' | 'bulk' | 'importList'>('bulk');
   const [bulkText, setBulkText] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [importLists, setImportLists] = useState<ImportList[]>([]);
+  const [selectedListId, setSelectedListId] = useState('');
 
   const { register, handleSubmit, reset, formState: { errors } } = useForm<z.infer<typeof singleContactSchema>>({
     resolver: zodResolver(singleContactSchema),
   });
 
+  React.useEffect(() => {
+    if (isOpen && activeTab === 'importList') {
+      importService.list().then(setImportLists).catch(() => {});
+    }
+  }, [isOpen, activeTab]);
+
   const handleSingleSubmit = async (data: any) => {
     try {
       setIsSubmitting(true);
-      await enrollmentService.enroll(sequenceId, {
+      const result = await enrollmentService.enroll(sequenceId, {
         contacts: [data],
         skip_existing: true,
       });
-      toast.success('Contact enrolled successfully');
+      if (result.data?.isOutsideWindow) {
+        const nextWindow = result.data?.nextAvailableWindow || '09:00 AM';
+        toast.success(`Contacts enrolled successfully. Emails will begin sending at the next available sending window (${nextWindow}).`);
+      } else {
+        toast.success('Contact enrolled successfully');
+      }
       reset();
       onSuccess();
       onClose();
@@ -82,12 +97,41 @@ export const EnrollModal: React.FC<EnrollModalProps> = ({ isOpen, onClose, seque
         skip_existing: true,
       });
       
-      toast.success(`Enrolled ${result.data.enrolled} contacts. Failed: ${result.data.failed}`);
+      if (result.data?.isOutsideWindow) {
+        const nextWindow = result.data?.nextAvailableWindow || '09:00 AM';
+        toast.success(`Contacts enrolled successfully. Emails will begin sending at the next available sending window (${nextWindow}).`);
+      } else {
+        toast.success(`Enrolled ${result.data.enrolled} contacts. Failed: ${result.data.failed}`);
+      }
       setBulkText('');
       onSuccess();
       onClose();
     } catch (err: any) {
       toast.error(err.response?.data?.message || 'Bulk enrollment failed');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleImportListSubmit = async () => {
+    if (!selectedListId) {
+      toast.error('Please select an import list');
+      return;
+    }
+    try {
+      setIsSubmitting(true);
+      const result = await importService.enroll(selectedListId, sequenceId);
+      if (result.isOutsideWindow) {
+        const nextWindow = result.nextAvailableWindow || '09:00 AM';
+        toast.success(`Contacts enrolled successfully. Emails will begin sending at the next available sending window (${nextWindow}).`);
+      } else {
+        toast.success(`Enrolled ${result.enrolled} contacts. Failed: ${result.failed}`);
+      }
+      setSelectedListId('');
+      onSuccess();
+      onClose();
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'Failed to enroll import list');
     } finally {
       setIsSubmitting(false);
     }
@@ -103,8 +147,10 @@ export const EnrollModal: React.FC<EnrollModalProps> = ({ isOpen, onClose, seque
           <Button variant="ghost" onClick={onClose} disabled={isSubmitting}>Cancel</Button>
           {activeTab === 'single' ? (
             <Button onClick={handleSubmit(handleSingleSubmit)} isLoading={isSubmitting}>Add Contact</Button>
-          ) : (
+          ) : activeTab === 'bulk' ? (
             <Button onClick={handleBulkSubmit} isLoading={isSubmitting}>Enroll Contacts</Button>
+          ) : (
+            <Button onClick={handleImportListSubmit} isLoading={isSubmitting} disabled={!selectedListId}>Enroll List</Button>
           )}
         </>
       }
@@ -122,6 +168,12 @@ export const EnrollModal: React.FC<EnrollModalProps> = ({ isOpen, onClose, seque
         >
           Single Contact
         </button>
+        <button
+          className={`pb-2 px-4 text-sm font-medium border-b-2 transition-colors ${activeTab === 'importList' ? 'border-primary-600 text-primary-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+          onClick={() => setActiveTab('importList')}
+        >
+          Import List
+        </button>
       </div>
 
       <div className="mt-4">
@@ -131,7 +183,7 @@ export const EnrollModal: React.FC<EnrollModalProps> = ({ isOpen, onClose, seque
             <Input label="First Name *" placeholder="John" {...register('first_name')} error={errors.first_name?.message} />
             <Input label="Company (Optional)" placeholder="Acme Corp" {...register('company')} error={errors.company?.message} />
           </form>
-        ) : (
+        ) : activeTab === 'bulk' ? (
           <div className="space-y-2">
             <label className="block text-sm font-medium text-gray-700">
               Paste Contacts (CSV Format)
@@ -147,6 +199,26 @@ export const EnrollModal: React.FC<EnrollModalProps> = ({ isOpen, onClose, seque
               placeholder="john@gmail.com,John&#10;sarah@gmail.com,Sarah"
               className="w-full min-h-[200px] rounded-md border border-gray-300 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 font-mono"
             />
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <label className="block text-sm font-medium text-gray-700">Select Import List</label>
+            {importLists.length === 0 ? (
+              <p className="text-sm text-gray-500">No import lists available. Upload a list from the "Import Lists" page first.</p>
+            ) : (
+              <select
+                value={selectedListId}
+                onChange={e => setSelectedListId(e.target.value)}
+                className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+              >
+                <option value="">— Select a list —</option>
+                {importLists.map(list => (
+                  <option key={list._id} value={list._id}>
+                    {list.name} ({list.valid_count} contacts)
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
         )}
       </div>

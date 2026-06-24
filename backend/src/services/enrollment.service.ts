@@ -14,6 +14,7 @@ import {
   ListContactsQueryDto,
   PatchContactStatusDto,
   EnrollContactItem,
+  BulkContactActionDto,
 } from '../validators/enrollment.validator';
 
 // ─── Types ─────────────────────────────────────────────────────────
@@ -23,104 +24,11 @@ export interface EnrollResult {
   failed:     number;
   errors:     Array<{ email: string; reason: string }>;
   contacts:   ISequenceContact[];
+  isOutsideWindow?: boolean;
+  nextAvailableWindow?: string;
 }
 
-// ─── Sending window helpers ────────────────────────────────────────
-
-/**
- * Given a raw Date, push it forward to the next valid sending window slot.
- * Respects timezone, weekday/all-day schedule, start/end hours.
- */
-export function adjustToSendingWindow(
-  rawDate: Date,
-  window: {
-    timezone:    string;
-    schedule:    string;
-    start_hour:  number;
-    end_hour:    number;
-    custom_days?: number[];
-  }
-): Date {
-  // Use Intl to get the local time components in the target timezone
-  const getLocalParts = (d: Date) => {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone:    window.timezone,
-      hour:        'numeric',
-      hour12:      false,
-      minute:      'numeric',
-      weekday:     'short',
-      year:        'numeric',
-      month:       '2-digit',
-      day:         '2-digit',
-    }).formatToParts(d);
-
-    const get = (type: string) =>
-      parts.find((p) => p.type === type)?.value ?? '';
-
-    const weekdayMap: Record<string, number> = {
-      Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
-    };
-
-    return {
-      hour:    parseInt(get('hour'), 10),
-      minute:  parseInt(get('minute'), 10),
-      weekday: weekdayMap[get('weekday')] ?? 0,
-    };
-  };
-
-  const isAllowedDay = (weekday: number): boolean => {
-    if (window.schedule === 'all_days') return true;
-    if (window.schedule === 'custom') {
-      return (window.custom_days ?? []).includes(weekday);
-    }
-    // weekdays_only: Mon(1) – Fri(5)
-    return weekday >= 1 && weekday <= 5;
-  };
-
-  let candidate = new Date(rawDate);
-  let iterations = 0;
-  const MAX_ITER = 60; // safety: never loop more than 60 days forward
-
-  while (iterations++ < MAX_ITER) {
-    const { hour, weekday } = getLocalParts(candidate);
-
-    if (!isAllowedDay(weekday)) {
-      // Skip to midnight of next day in local tz, then push to window start
-      candidate = new Date(candidate.getTime() + 24 * 60 * 60 * 1000);
-      // Reset to start_hour
-      const { hour: h } = getLocalParts(candidate);
-      if (h > window.start_hour) {
-        candidate = new Date(
-          candidate.getTime() + (24 - h + window.start_hour) * 60 * 60 * 1000
-        );
-      } else if (h < window.start_hour) {
-        candidate = new Date(
-          candidate.getTime() + (window.start_hour - h) * 60 * 60 * 1000
-        );
-      }
-      continue;
-    }
-
-    if (hour < window.start_hour) {
-      // Before window — push to start_hour
-      candidate = new Date(
-        candidate.getTime() + (window.start_hour - hour) * 60 * 60 * 1000
-      );
-      continue;
-    }
-
-    if (hour >= window.end_hour) {
-      // After window — push to start_hour next allowed day
-      candidate = new Date(candidate.getTime() + (24 - hour + window.start_hour) * 60 * 60 * 1000);
-      continue;
-    }
-
-    // We're in a valid window
-    break;
-  }
-
-  return candidate;
-}
+import { calculateNextValidSlot, SendingWindow } from '@email-sequencing/shared';
 
 /**
  * Compute the absolute Date when a step should fire for a contact.
@@ -129,20 +37,14 @@ export function adjustToSendingWindow(
 function computeNextSendAt(
   base: Date,
   step: ISequenceStep,
-  sendingWindow: {
-    timezone: string;
-    schedule: string;
-    start_hour: number;
-    end_hour: number;
-    custom_days?: number[];
-  }
+  sendingWindow: SendingWindow
 ): Date {
   const delayMs =
     (step.delay_days  ?? 0) * 24 * 60 * 60 * 1000 +
     (step.delay_hours ?? 0)      * 60 * 60 * 1000;
 
   const raw = new Date(base.getTime() + delayMs);
-  return adjustToSendingWindow(raw, sendingWindow);
+  return calculateNextValidSlot(raw, sendingWindow);
 }
 
 // ─── Service ───────────────────────────────────────────────────────
@@ -158,9 +60,9 @@ export class EnrollmentService {
     const seq = await Sequence.findOne({ _id: sequenceId, user_id: userId });
     if (!seq) throw AppError.notFound('Sequence');
 
-    if (seq.status !== SequenceStatus.ACTIVE) {
+    if ([SequenceStatus.COMPLETED, SequenceStatus.ARCHIVED].includes(seq.status)) {
       throw AppError.badRequest(
-        `Sequence must be "active" to enroll contacts. Current status: "${seq.status}"`
+        `Cannot enroll contacts to a sequence with status: "${seq.status}"`
       );
     }
 
@@ -302,6 +204,21 @@ export class EnrollmentService {
         );
       }
 
+      // Add detailed logging for the enrolled contacts
+      for (const contactDoc of inserted) {
+        logger.info('DEBUG ENROLLMENT:', {
+          contactId: contactDoc._id.toString(),
+          sequenceId: contactDoc.sequence_id.toString(),
+          current_step_index: contactDoc.current_step_index,
+          next_send_at: contactDoc.next_send_at?.toISOString(),
+          enrolled_at: contactDoc.enrolled_at.toISOString(),
+          delay_days: firstEmailStep.delay_days,
+          delay_hours: firstEmailStep.delay_hours,
+          step_type: firstEmailStep.type,
+          total_steps: contactDoc.total_steps,
+        });
+      }
+
       logger.info('Contacts enrolled', {
         sequenceId,
         userId,
@@ -310,6 +227,20 @@ export class EnrollmentService {
         failed:   result.failed,
       });
     }
+
+    const now = new Date();
+    const nextValid = calculateNextValidSlot(now, seq.sending_window as any);
+    const isOutsideWindow = nextValid.getTime() > now.getTime();
+    
+    const startHour = seq.sending_window?.start_hour ?? 9;
+    const startMinute = seq.sending_window?.start_minute ?? 0;
+    const ampm = startHour >= 12 ? 'PM' : 'AM';
+    const displayHour = startHour % 12 === 0 ? 12 : startHour % 12;
+    const displayMinute = startMinute.toString().padStart(2, '0');
+    const nextAvailableWindow = `${displayHour.toString().padStart(2, '0')}:${displayMinute} ${ampm}`;
+
+    result.isOutsideWindow = isOutsideWindow;
+    result.nextAvailableWindow = nextAvailableWindow;
 
     return result;
   }
@@ -438,6 +369,122 @@ export class EnrollmentService {
     });
 
     return contact;
+  }
+
+  // ── Bulk Delete ───────────────────────────────────────────────────
+  async bulkDelete(
+    userId: string,
+    sequenceId: string,
+    dto: BulkContactActionDto
+  ): Promise<{ deleted: number }> {
+    const seq = await Sequence.findOne({ _id: sequenceId, user_id: userId });
+    if (!seq) throw AppError.notFound('Sequence');
+
+    const contacts = await SequenceContact.find({
+      _id: { $in: dto.contactIds },
+      sequence_id: sequenceId
+    });
+
+    if (contacts.length === 0) return { deleted: 0 };
+
+    let activeCountToRemove = 0;
+    contacts.forEach(c => {
+      if (c.status === ContactEnrollmentStatus.ACTIVE) {
+        activeCountToRemove++;
+      }
+    });
+
+    await SequenceContact.deleteMany({
+      _id: { $in: contacts.map(c => c._id) },
+      sequence_id: sequenceId
+    });
+
+    if (activeCountToRemove > 0) {
+      await Sequence.updateOne(
+        { _id: sequenceId },
+        { $inc: { 'stats.active_contacts': -activeCountToRemove } }
+      );
+    }
+
+    logger.info('Bulk deleted contacts', { sequenceId, userId, count: contacts.length });
+    return { deleted: contacts.length };
+  }
+
+  // ── Bulk Pause ────────────────────────────────────────────────────
+  async bulkPause(
+    userId: string,
+    sequenceId: string,
+    dto: BulkContactActionDto
+  ): Promise<{ paused: number }> {
+    const seq = await Sequence.findOne({ _id: sequenceId, user_id: userId });
+    if (!seq) throw AppError.notFound('Sequence');
+
+    const contacts = await SequenceContact.find({
+      _id: { $in: dto.contactIds },
+      sequence_id: sequenceId,
+      status: ContactEnrollmentStatus.ACTIVE // only active can be paused
+    });
+
+    if (contacts.length === 0) return { paused: 0 };
+
+    await SequenceContact.updateMany(
+      { _id: { $in: contacts.map(c => c._id) } },
+      { 
+        $set: { 
+          status: ContactEnrollmentStatus.PAUSED, 
+          paused_at: new Date() 
+        } 
+      }
+    );
+
+    await Sequence.updateOne(
+      { _id: sequenceId },
+      { $inc: { 'stats.active_contacts': -contacts.length } }
+    );
+
+    logger.info('Bulk paused contacts', { sequenceId, userId, count: contacts.length });
+    return { paused: contacts.length };
+  }
+
+  // ── Bulk Resume ───────────────────────────────────────────────────
+  async bulkResume(
+    userId: string,
+    sequenceId: string,
+    dto: BulkContactActionDto
+  ): Promise<{ resumed: number }> {
+    const seq = await Sequence.findOne({ _id: sequenceId, user_id: userId });
+    if (!seq) throw AppError.notFound('Sequence');
+
+    const contacts = await SequenceContact.find({
+      _id: { $in: dto.contactIds },
+      sequence_id: sequenceId,
+      status: ContactEnrollmentStatus.PAUSED // only paused can be resumed
+    });
+
+    if (contacts.length === 0) return { resumed: 0 };
+
+    const now = new Date();
+    // Use the shared calculateNextValidSlot to ensure they don't get stuck in the past
+    const nextValidSlot = calculateNextValidSlot(now, seq.sending_window as any);
+
+    await SequenceContact.updateMany(
+      { _id: { $in: contacts.map(c => c._id) } },
+      { 
+        $set: { 
+          status: ContactEnrollmentStatus.ACTIVE, 
+          next_send_at: nextValidSlot 
+        },
+        $unset: { paused_at: "" }
+      }
+    );
+
+    await Sequence.updateOne(
+      { _id: sequenceId },
+      { $inc: { 'stats.active_contacts': contacts.length } }
+    );
+
+    logger.info('Bulk resumed contacts', { sequenceId, userId, count: contacts.length });
+    return { resumed: contacts.length };
   }
 
   // ── Remove / Unsubscribe a contact ────────────────────────────────

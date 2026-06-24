@@ -36,12 +36,16 @@ export interface IEmailConnection extends Document {
   // Provider
   provider: ProviderType;
 
+  // Auth Method
+  auth_method: 'smtp' | 'oauth2';
+  oauth_refresh_token_enc?: string;
+
   // SMTP
   smtp_host: string;
   smtp_port: number;
   smtp_encryption: SmtpEncryption;
-  smtp_username: string;
-  smtp_password_enc: string;  // AES-256-CBC encrypted
+  smtp_username?: string;
+  smtp_password_enc?: string;  // AES-256-CBC encrypted
 
   // IMAP (optional — for reply detection)
   imap_host?: string;
@@ -98,6 +102,14 @@ const EmailConnectionSchema = new Schema<IEmailConnection>(
       default: ProviderType.CUSTOM,
     },
 
+    // ── Auth & OAuth ──────────────────────────────────────────────
+    auth_method: {
+      type: String,
+      enum: ['smtp', 'oauth2'],
+      default: 'smtp',
+    },
+    oauth_refresh_token_enc: { type: String },
+
     // ── SMTP ──────────────────────────────────────────────────────
     smtp_host:         { type: String, required: true, trim: true },
     smtp_port:         { type: Number, required: true, min: 1, max: 65535, default: 587 },
@@ -106,8 +118,15 @@ const EmailConnectionSchema = new Schema<IEmailConnection>(
       enum: Object.values(SmtpEncryption),
       default: SmtpEncryption.TLS,
     },
-    smtp_username:     { type: String, required: true, trim: true },
-    smtp_password_enc: { type: String, required: true }, // AES-256-CBC ciphertext
+    smtp_username:     { 
+      type: String, 
+      trim: true,
+      required: function(this: any) { return this.auth_method === 'smtp'; }
+    },
+    smtp_password_enc: { 
+      type: String,
+      required: function(this: any) { return this.auth_method === 'smtp'; }
+    }, // AES-256-CBC ciphertext
 
     // ── IMAP ──────────────────────────────────────────────────────
     imap_host:         { type: String, trim: true },

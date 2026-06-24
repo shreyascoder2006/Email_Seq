@@ -10,6 +10,7 @@ interface ModalProps {
   children: React.ReactNode;
   footer?: React.ReactNode;
   className?: string;
+  maxWidth?: string;
 }
 
 export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, footer, className }) => {

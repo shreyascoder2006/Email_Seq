@@ -5,6 +5,9 @@ import { sendSuccess } from '../utils/response';
 import { AppError } from '../utils/AppError';
 import { CreateTemplateSchema, UpdateTemplateSchema, IdParamSchema, PreviewTemplateSchema } from '../validators/template.validator';
 import sanitizeHtml from 'sanitize-html';
+import { ImportList } from '../models/ImportList';
+import { CustomField } from '../models/CustomField';
+import { z } from 'zod';
 
 const extractVariables = (html: string) => {
   const regex = /{{\s*(\w+)(?:\|([^}]+))?\s*}}/g;
@@ -34,6 +37,90 @@ export const listTemplates = async (req: AuthenticatedRequest, res: Response, ne
       .sort({ updated_at: -1 })
       .lean();
     sendSuccess(res, templates, 'Templates retrieved');
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const getMergeTags = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const userId = req.user?.userId;
+    
+    const contact = [
+      { tag: '{{first_name}}', label: 'First Name', desc: "Contact's first name" },
+      { tag: '{{last_name}}', label: 'Last Name', desc: "Contact's last name" },
+      { tag: '{{email}}', label: 'Email', desc: "Contact's email address" },
+      { tag: '{{company}}', label: 'Company', desc: "Contact's company name" },
+    ];
+
+    const sender = [
+      { tag: '{{sender_name}}', label: 'Sender Name', desc: "Your full name" },
+      { tag: '{{sender_email}}', label: 'Sender Email', desc: "Your email address" },
+      { tag: '{{signature}}', label: 'Signature', desc: "Your email signature" },
+    ];
+
+    const sequence = [
+      { tag: '{{sequence_name}}', label: 'Sequence Name', desc: "Name of the current sequence" },
+      { tag: '{{step_number}}', label: 'Step Number', desc: "Current step in the sequence" },
+      { tag: '{{current_date}}', label: 'Current Date', desc: "Today's date" },
+    ];
+
+    // Aggregate custom fields from the user's import lists
+    const importLists = await ImportList.find({ user_id: userId }).lean();
+    const customSet = new Set<string>();
+    
+    for (const list of importLists) {
+      for (const mapping of list.field_mappings) {
+        if (!mapping.is_system) {
+          customSet.add(mapping.system_field);
+        }
+      }
+    }
+
+    // Combine with global custom fields
+    const globalCustomFields = await CustomField.find({ user_id: userId }).lean();
+    for (const cf of globalCustomFields) {
+      customSet.add(cf.key);
+    }
+
+    const custom = Array.from(customSet).map(field => {
+      // Use label from CustomField if it exists, otherwise generate one
+      const cf = globalCustomFields.find(c => c.key === field);
+      return {
+        tag: `{{${field}}}`,
+        label: cf ? cf.label : field.charAt(0).toUpperCase() + field.slice(1).replace(/_/g, ' '),
+        desc: `Custom field: ${field}`
+      };
+    });
+
+    sendSuccess(res, { contact, custom, sender, sequence }, 'Merge tags retrieved');
+  } catch (err) {
+    next(err);
+  }
+};
+
+const CreateCustomFieldSchema = z.object({
+  key: z.string().trim().toLowerCase().regex(/^[a-z0-9_]+$/, 'Only lowercase letters, numbers, and underscores allowed'),
+  label: z.string().trim().min(1, 'Label is required'),
+});
+
+export const createCustomMergeTag = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const data = CreateCustomFieldSchema.parse(req.body);
+    const userId = req.user?.userId;
+
+    const existing = await CustomField.findOne({ user_id: userId, key: data.key });
+    if (existing) {
+      throw new AppError('A custom field with this key already exists.', 400);
+    }
+
+    const newField = await CustomField.create({
+      user_id: userId,
+      key: data.key,
+      label: data.label,
+    });
+
+    sendSuccess(res, newField, 'Custom field created successfully', 201);
   } catch (err) {
     next(err);
   }
@@ -117,26 +204,38 @@ export const deleteTemplate = async (req: AuthenticatedRequest, res: Response, n
 
 export const previewTemplate = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const { id } = IdParamSchema.parse(req.params);
-    const template = await Template.findOne({ _id: id, user_id: req.user?.userId, is_archived: false });
-    if (!template) throw new AppError('Template not found', 404);
+    const { id } = req.params;
+    
+    // We can preview an existing template by ID or raw HTML/Subject sent in body
+    let html = req.body.html || '';
+    let subject = req.body.subject || '';
 
-    // Provide some mock contact data if not provided
-    const defaultContact = {
-      firstName: 'John',
-      lastName: 'Doe',
+    if (id && id !== 'raw') {
+      const template = await Template.findOne({ _id: id, user_id: req.user?.userId, is_archived: false });
+      if (!template) throw new AppError('Template not found', 404);
+      html = html || template.body_html;
+      subject = subject || template.subject;
+    }
+
+    // Dummy contact data
+    const dummyCtx = {
+      first_name: 'John',
+      last_name: 'Doe',
+      email: 'john.doe@example.com',
       company: 'Acme Corp',
+      custom_variables: {
+        favorite_product: 'EmailSequencer Pro',
+        industry: 'Software',
+      }
     };
 
-    let html = template.body_html;
-    let subject = template.subject;
-
-    const regex = /{{\s*(\w+)(?:\|([^}]+))?\s*}}/g;
+    // Replace basic tags
+    const regex = /{{\s*([a-zA-Z0-9_]+)\s*}}/g;
     
-    const replacer = (match: string, p1: string, p2: string) => {
-      const val = defaultContact[p1 as keyof typeof defaultContact];
-      if (val) return val;
-      if (p2) return p2.trim();
+    const replacer = (match: string, p1: string) => {
+      const key = p1.toLowerCase();
+      if (key in dummyCtx) return dummyCtx[key as keyof typeof dummyCtx] as string;
+      if (key in dummyCtx.custom_variables) return dummyCtx.custom_variables[key as keyof typeof dummyCtx.custom_variables];
       return `[${p1}]`;
     };
 

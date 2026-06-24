@@ -5,17 +5,21 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { Button } from '../components/ui/Button';
 import { LoadingSpinner } from '../components/ui/LoadingSpinner';
 import { EmailAccountModal } from '../components/email/EmailAccountModal';
+import { ProviderSelectionModal } from '../components/email/ProviderSelectionModal';
 import { emailAccountService } from '../services/emailAccount.service';
 import type { EmailConnection, CreateEmailConnectionDto, UpdateEmailConnectionDto } from '../types';
+import { useSearchParams } from 'react-router-dom';
 
 export const EmailAccounts: React.FC = () => {
   const [accounts, setAccounts] = useState<EmailConnection[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isModalOpen, setIsModalOpen] = useState(false); // Legacy SMTP modal
+  const [isProviderModalOpen, setIsProviderModalOpen] = useState(false); // New OAuth modal
   const [editingAccount, setEditingAccount] = useState<EmailConnection | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const fetchAccounts = useCallback(async () => {
     try {
@@ -33,9 +37,22 @@ export const EmailAccounts: React.FC = () => {
     fetchAccounts();
   }, [fetchAccounts]);
 
+  useEffect(() => {
+    const success = searchParams.get('oauth_success');
+    const error = searchParams.get('oauth_error');
+
+    if (success === 'true') {
+      toast.success('Account connected successfully');
+      setSearchParams({}); // Clear params
+    } else if (error) {
+      toast.error(`OAuth failed: ${error}`);
+      setSearchParams({}); // Clear params
+    }
+  }, [searchParams, setSearchParams]);
+
   const handleOpenCreate = () => {
     setEditingAccount(null);
-    setIsModalOpen(true);
+    setIsProviderModalOpen(true);
   };
 
   const handleOpenEdit = (account: EmailConnection) => {
@@ -196,6 +213,12 @@ export const EmailAccounts: React.FC = () => {
           </div>
         </div>
       )}
+
+      <ProviderSelectionModal
+        isOpen={isProviderModalOpen}
+        onClose={() => setIsProviderModalOpen(false)}
+        onSelectSmtp={() => setIsModalOpen(true)}
+      />
 
       <EmailAccountModal
         isOpen={isModalOpen}

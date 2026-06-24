@@ -42,6 +42,8 @@ export const CreateEmailConnectionSchema = z.object({
     })
     .default(ProviderType.CUSTOM),
 
+  auth_method: z.enum(['smtp', 'oauth2']).default('smtp'),
+
   // ── SMTP (required) ──────────────────────────────────────────────
   smtp_host: z
     .string({ required_error: 'SMTP host is required' })
@@ -53,14 +55,9 @@ export const CreateEmailConnectionSchema = z.object({
 
   smtp_encryption: encryptionField.default(SmtpEncryption.TLS),
 
-  smtp_username: z
-    .string({ required_error: 'SMTP username is required' })
-    .trim()
-    .min(1),
+  smtp_username: z.string().trim().optional(),
 
-  smtp_password: z
-    .string({ required_error: 'SMTP password is required' })
-    .min(1, 'SMTP password cannot be empty'),
+  smtp_password: z.string().optional(),
 
   // ── IMAP (optional) ───────────────────────────────────────────────
   imap_host:       z.string().trim().max(253).optional(),
@@ -101,6 +98,14 @@ export const CreateEmailConnectionSchema = z.object({
   // If IMAP host provided, require password
   (data) => !data.imap_host || !!data.imap_password,
   { message: 'IMAP password is required when IMAP host is provided', path: ['imap_password'] }
+).refine(
+  // If auth_method is smtp, require smtp_username
+  (data) => data.auth_method === 'oauth2' || !!data.smtp_username,
+  { message: 'SMTP username is required for SMTP auth', path: ['smtp_username'] }
+).refine(
+  // If auth_method is smtp, require smtp_password
+  (data) => data.auth_method === 'oauth2' || !!data.smtp_password,
+  { message: 'SMTP password is required for SMTP auth', path: ['smtp_password'] }
 );
 
 // ─── Update EmailConnection (all SMTP/IMAP fields optional) ────────

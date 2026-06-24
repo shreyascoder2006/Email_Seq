@@ -33,6 +33,13 @@ const SendingWindowSchema = z.object({
     .max(23)
     .default(9)
     .describe('Hour to start sending (24h format)'),
+  start_minute: z
+    .number()
+    .int()
+    .min(0)
+    .max(59)
+    .default(0)
+    .describe('Minute to start sending'),
   end_hour: z
     .number()
     .int()
@@ -40,13 +47,20 @@ const SendingWindowSchema = z.object({
     .max(23)
     .default(17)
     .describe('Hour to stop sending (24h format)'),
+  end_minute: z
+    .number()
+    .int()
+    .min(0)
+    .max(59)
+    .default(0)
+    .describe('Minute to stop sending'),
   custom_days: z
     .array(z.number().int().min(0).max(6))
     .optional()
     .describe('0=Sun … 6=Sat — only for schedule="custom"'),
 }).refine(
-  (d) => d.start_hour < d.end_hour,
-  { message: 'start_hour must be before end_hour', path: ['start_hour'] }
+  (d) => (d.start_hour * 60 + d.start_minute) < (d.end_hour * 60 + d.end_minute),
+  { message: 'start time must be before end time', path: ['start_hour'] }
 ).refine(
   (d) => d.schedule !== SendingSchedule.CUSTOM || (d.custom_days && d.custom_days.length > 0),
   { message: 'custom_days is required when schedule is "custom"', path: ['custom_days'] }
@@ -153,6 +167,9 @@ const EmailStepSchema = z.object({
 
   body_html_override: z.string().optional(),
   body_text_override: z.string().optional(),
+
+  cc: z.array(z.string().email('Invalid CC email')).optional(),
+  bcc: z.array(z.string().email('Invalid BCC email')).optional(),
 
   delay_days:  z.number().int().min(0).max(365).default(0),
   delay_hours: z.number().int().min(0).max(23).default(0),

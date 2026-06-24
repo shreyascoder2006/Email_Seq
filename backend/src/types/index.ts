@@ -158,6 +158,7 @@ export interface ApiResponse<T = unknown> {
   success: boolean;
   message: string;
   data?: T;
+  details?: any;
   errors?: unknown[];
   meta?: {
     page?: number;

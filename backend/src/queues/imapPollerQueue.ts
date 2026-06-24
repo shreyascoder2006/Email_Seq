@@ -86,7 +86,7 @@ async function processImapPoll(job: Job): Promise<void> {
       connection.user_id.toString(),
       connection._id.toString()
     );
-    imapPassword = creds.imapPassword || creds.smtpPassword; // Fallback to SMTP password if IMAP isn't separate
+    imapPassword = creds.imapPassword || creds.smtpPassword || ''; // Fallback to SMTP password if IMAP isn't separate
   } catch (err) {
     logger.error(`Failed to decrypt credentials for IMAP: ${connection.label}`, { error: (err as Error).message });
     return;
@@ -97,7 +97,7 @@ async function processImapPoll(job: Job): Promise<void> {
     port: connection.imap_port || 993,
     secure: connection.imap_encryption === 'ssl' || connection.imap_encryption === 'tls' || connection.imap_port === 993,
     auth: {
-      user: connection.imap_username || connection.smtp_username,
+      user: connection.imap_username || connection.smtp_username || connection.from_email,
       pass: imapPassword,
     },
     logger: false, // Too noisy

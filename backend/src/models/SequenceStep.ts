@@ -41,6 +41,9 @@ export interface ISequenceStep extends Document {
   body_html_override?: string;   // override template body
   body_text_override?: string;
 
+  cc?: string[];                 // Step-level CC
+  bcc?: string[];                // Step-level BCC
+
   // ── WAIT / delay settings (apply to all step types) ──────────
   // How long to wait BEFORE sending this step
   delay_days:  number;
@@ -119,6 +122,9 @@ const SequenceStepSchema = new Schema<ISequenceStep>(
     subject_override:    { type: String, trim: true, maxlength: 500 },
     body_html_override:  { type: String },
     body_text_override:  { type: String },
+
+    cc:  { type: [String], default: [] },
+    bcc: { type: [String], default: [] },
 
     // Delay
     delay_days:  { type: Number, default: 1, min: 0, max: 365 },

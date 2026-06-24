@@ -3,7 +3,7 @@ import { BULL_REDIS_URL, BULL_REDIS_TLS } from '../config/redis';
 import { SequenceContact, ContactEnrollmentStatus } from '../models/SequenceContact';
 import { SequenceStep } from '../models/SequenceStep';
 import { Sequence } from '../models/Sequence';
-import { EmailConnection } from '../models/EmailConnection';
+import { EmailConnection, ConnectionStatus } from '../models/EmailConnection';
 import { Template } from '../models/Template';
 import { SendingLog, SendStatus } from '../models/SendingLog';
 import { ClickLog } from '../models/ClickLog';
@@ -16,10 +16,55 @@ import nodemailer from 'nodemailer';
 import crypto from 'crypto';
 import { encrypt } from '../utils/crypto';
 
-const QUEUE_NAME = env.EMAIL_QUEUE_NAME;
-const CONCURRENCY = parseInt(env.QUEUE_CONCURRENCY, 10);
-const RETRY_ATTEMPTS = parseInt(env.RETRY_ATTEMPTS, 10);
+const QUEUE_NAME       = env.EMAIL_QUEUE_NAME;
+const CONCURRENCY      = parseInt(env.QUEUE_CONCURRENCY,   10);
+const RETRY_ATTEMPTS   = parseInt(env.RETRY_ATTEMPTS,      10);
 const RETRY_BACKOFF_DELAY = parseInt(env.RETRY_BACKOFF_DELAY, 10);
+
+// ─── In-memory worker health state ────────────────────────────────
+export interface WorkerHealth {
+  workerRunning:              boolean;
+  workerClosed:               boolean;
+  redisConnected:             boolean;
+  queueName:                  string;
+  concurrency:                number;
+  lastJobProcessedAt:         string | null;
+  startedAt:                  string | null;
+  lastJobStartedAt:           string | null;
+  lastJobCompletedAt:         string | null;
+  lastJobFailedAt:            string | null;
+  lastProcessedContactId:     string | null;
+  lastSuccessfulEmailSentAt:  string | null;
+  lastSuccessfulEmailSentTo:  string | null;
+  lastSuccessfulSequenceId:   string | null;
+}
+
+const workerHealth: WorkerHealth = {
+  workerRunning:              false,
+  workerClosed:               false,
+  redisConnected:             false,
+  queueName:                  QUEUE_NAME,
+  concurrency:                CONCURRENCY,
+  lastJobProcessedAt:         null,
+  startedAt:                  null,
+  lastJobStartedAt:           null,
+  lastJobCompletedAt:         null,
+  lastJobFailedAt:            null,
+  lastProcessedContactId:     null,
+  lastSuccessfulEmailSentAt:  null,
+  lastSuccessfulEmailSentTo:  null,
+  lastSuccessfulSequenceId:   null,
+};
+
+export function getWorkerHealth(): Readonly<WorkerHealth> {
+  return { ...workerHealth };
+}
+
+export function recordSuccessfulEmailSend(to: string, sequenceId: string) {
+  workerHealth.lastSuccessfulEmailSentAt = new Date().toISOString();
+  workerHealth.lastSuccessfulEmailSentTo = to;
+  workerHealth.lastSuccessfulSequenceId  = sequenceId;
+}
 
 // ─── BullMQ connection (uses its own bundled ioredis) ─────────────
 function makeBullConnection(): ConnectionOptions {
@@ -118,8 +163,9 @@ export async function processEmailSend(job: Job): Promise<void> {
   ]);
 
   logger.info('Email worker: sequence step loaded', {
-    stepFound: !!step,
+    sequenceId: contact.sequence_id.toString(),
     sequenceFound: !!sequence,
+    stepFound: !!step,
     stepType: step?.type,
     email_connection_id_on_step: (step as any)?.email_connection_id,
     email_connection_id_on_contact: contact.email_connection_id,
@@ -129,8 +175,18 @@ export async function processEmailSend(job: Job): Promise<void> {
     logger.error('Email worker: step or sequence not found — UnrecoverableError', {
       sequenceContactId,
       stepIndex,
-      sequenceId: contact.sequence_id,
+      sequenceId: contact.sequence_id.toString(),
+      sequenceFound: !!sequence,
+      stepFound: !!step,
     });
+
+    // Mark the contact as failed in the DB so it is not retried/enqueued again
+    contact.status = ContactEnrollmentStatus.FAILED;
+    contact.failed_at = new Date();
+    contact.last_error = 'Step or sequence not found';
+    contact.next_send_at = null;
+    await contact.save();
+
     throw new UnrecoverableError(`Step or sequence not found — marking contact failed`);
   }
 
@@ -165,7 +221,12 @@ export async function processEmailSend(job: Job): Promise<void> {
 
   if (!connection) {
     logger.error('Email worker: email connection not found — UnrecoverableError', { connectionId });
-    throw new UnrecoverableError(`Email connection ${connectionId} not found or inactive`);
+    throw new UnrecoverableError(`Email connection ${connectionId} not found`);
+  }
+
+  if (connection.status !== ConnectionStatus.ACTIVE) {
+    logger.error('Email worker: email connection inactive — UnrecoverableError', { connectionId, status: connection.status });
+    throw new UnrecoverableError(`Email connection ${connectionId} is inactive`);
   }
 
   // 3. Render email
@@ -244,16 +305,32 @@ export async function processEmailSend(job: Job): Promise<void> {
   }
 
   // 4. Send via Nodemailer
-  const { smtpPassword } = await emailConnectionService.getDecryptedCredentials(
+  const { smtpPassword, oauthRefreshToken } = await emailConnectionService.getDecryptedCredentials(
     contact.user_id.toString(),
     connectionId.toString()
   );
+
+  let authConfig: any;
+  if (connection.auth_method === 'oauth2') {
+    authConfig = {
+      type: 'OAuth2',
+      user: connection.from_email,
+      clientId: connection.provider === 'gmail' ? env.GOOGLE_CLIENT_ID : env.MICROSOFT_CLIENT_ID,
+      clientSecret: connection.provider === 'gmail' ? env.GOOGLE_CLIENT_SECRET : env.MICROSOFT_CLIENT_SECRET,
+      refreshToken: oauthRefreshToken,
+    };
+  } else {
+    authConfig = {
+      user: connection.smtp_username,
+      pass: smtpPassword,
+    };
+  }
 
   const transporter = nodemailer.createTransport({
     host:   connection.smtp_host,
     port:   connection.smtp_port,
     secure: connection.smtp_encryption === 'ssl',
-    auth:   { user: connection.smtp_username, pass: smtpPassword },
+    auth:   authConfig,
     connectionTimeout: 15_000,
   });
 
@@ -275,6 +352,8 @@ export async function processEmailSend(job: Job): Promise<void> {
       from:    `"${connection.from_name}" <${connection.from_email}>`,
       replyTo: connection.reply_to || connection.from_email,
       to:      contact.contact_email,
+      cc:      (step as any).cc?.length ? (step as any).cc : undefined,
+      bcc:     (step as any).bcc?.length ? (step as any).bcc : undefined,
       subject: rendered.subject,
       html:    rendered.body_html,
       text:    rendered.body_text || undefined,
@@ -292,6 +371,9 @@ export async function processEmailSend(job: Job): Promise<void> {
       messageId,
     });
     transporter.close();
+
+    // Track successful send metrics
+    recordSuccessfulEmailSend(contact.contact_email, contact.sequence_id.toString());
   } catch (err: any) {
     transporter.close();
     const is5xx = err.responseCode >= 500 && err.responseCode < 600;
@@ -305,6 +387,27 @@ export async function processEmailSend(job: Job): Promise<void> {
         failed_at:     new Date(),
       }
     );
+
+    // Handle OAuth revocation / Auth failures
+    const errMsg = err.message || '';
+    const isOauthError = errMsg.includes('invalid_grant') || errMsg.includes('invalid_client') || errMsg.includes('unauthorized_client');
+    const isAuthError = err.responseCode === 535 || isOauthError;
+
+    if (isAuthError) {
+      // Mark connection as failed to prevent further sends
+      connection.status = ConnectionStatus.FAILED;
+      connection.failure_reason = `Authentication failed: ${errMsg}`;
+      await connection.save();
+
+      // Pause the contact since the whole sender is broken
+      contact.status = ContactEnrollmentStatus.FAILED;
+      contact.failed_at = new Date();
+      contact.last_error = `Sender authentication failed: ${errMsg}`;
+      contact.next_send_at = null;
+      await contact.save();
+      
+      throw new UnrecoverableError(`Authentication failed for sender ${connection.from_email}. Connection marked as failed.`);
+    }
 
     // Increment consecutive failures
     contact.consecutive_failures = (contact.consecutive_failures ?? 0) + 1;
@@ -393,40 +496,134 @@ export function startEmailWorker(): Worker | null {
       limiter:      { max: 10, duration: 1000 }, // max 10 sends/sec globally
     });
 
-    worker.on('ready', () => logger.info(`✅ Email worker ready [concurrency=${CONCURRENCY}, queue=${QUEUE_NAME}]`));
-    worker.on('error', (err: Error) => {
-      // Log even in dev — these indicate real queue configuration problems
-      logger.error('Email worker error', { error: err.message });
+    // ── Lifecycle: ready ──────────────────────────────────────────
+    worker.on('ready', () => {
+      workerHealth.workerRunning  = true;
+      workerHealth.workerClosed   = false;
+      workerHealth.redisConnected = true;
+      workerHealth.startedAt      = new Date().toISOString();
+      
+      // Worker Startup Verification
+      if (workerHealth.redisConnected && workerHealth.workerRunning) {
+        logger.info('WORKER STARTUP CHECK PASSED: Redis connected, queue accessible, worker registered.', {
+          timestamp:   workerHealth.startedAt,
+          queueName:   QUEUE_NAME,
+          concurrency: CONCURRENCY,
+        });
+      }
     });
+
+    // ── Lifecycle: active ─────────────────────────────────────────
     worker.on('active', (job) => {
+      const { sequenceContactId, stepIndex } = (job.data ?? {}) as {
+        sequenceContactId?: string;
+        stepIndex?:         number;
+      };
+      workerHealth.lastJobStartedAt = new Date().toISOString();
       logger.info('Email worker: job ACTIVE (processing started)', {
-        jobId:    job.id,
-        jobName:  job.name,
-        attempt:  job.attemptsMade + 1,
-        payload:  job.data,
+        jobId:             job.id,
+        jobName:           job.name,
+        attempt:           job.attemptsMade + 1,
+        contactId:         sequenceContactId ?? null,
+        stepIndex:         stepIndex         ?? null,
+        timestamp:         workerHealth.lastJobStartedAt,
       });
     });
+
+    // ── Lifecycle: completed ──────────────────────────────────────
     worker.on('completed', (job) => {
+      const { sequenceContactId } = (job.data ?? {}) as { sequenceContactId?: string };
+      workerHealth.lastJobProcessedAt = new Date().toISOString();
+      workerHealth.lastJobCompletedAt = workerHealth.lastJobProcessedAt;
+      if (sequenceContactId) workerHealth.lastProcessedContactId = sequenceContactId;
+
       logger.info('Email worker: job COMPLETED ✅', {
-        jobId:   job.id,
-        jobName: job.name,
+        jobId:     job.id,
+        jobName:   job.name,
+        contactId: sequenceContactId ?? null,
+        timestamp: workerHealth.lastJobProcessedAt,
       });
     });
-    worker.on('failed', (job, err: Error) => {
+
+    // ── Lifecycle: failed ─────────────────────────────────────────
+    worker.on('failed', async (job, err: Error) => {
+      const { sequenceContactId } = (job?.data ?? {}) as { sequenceContactId?: string };
+      workerHealth.lastJobProcessedAt = new Date().toISOString();
+      workerHealth.lastJobFailedAt = workerHealth.lastJobProcessedAt;
+      if (sequenceContactId) workerHealth.lastProcessedContactId = sequenceContactId;
+
+      const isUnrecoverable = err.name === 'UnrecoverableError';
+
       logger.error('Email worker: job FAILED ❌', {
-        jobId:    job?.id,
-        attempt:  job?.attemptsMade,
-        error:    err.message,
-        isUnrecoverable: err.name === 'UnrecoverableError',
+        jobId:           job?.id               ?? null,
+        contactId:       sequenceContactId      ?? null,
+        attempt:         job?.attemptsMade      ?? null,
+        error:           err.message,
+        isUnrecoverable: isUnrecoverable,
+        timestamp:       workerHealth.lastJobProcessedAt,
+      });
+
+      // Update sequence integrity state if unrecoverable
+      if (isUnrecoverable && sequenceContactId) {
+        try {
+          const contact = await SequenceContact.findById(sequenceContactId).select('sequence_id').lean();
+          if (contact && contact.sequence_id) {
+            await Sequence.updateOne(
+              { _id: contact.sequence_id },
+              {
+                $set: {
+                  needs_attention: true,
+                  integrity_error: true,
+                  last_integrity_error: err.message
+                }
+              }
+            );
+          }
+        } catch (dbErr) {
+          logger.error('Email worker: failed to flag sequence integrity error', { error: dbErr });
+        }
+      }
+    });
+
+    // ── Lifecycle: stalled ────────────────────────────────────────
+    worker.on('stalled', (jobId: string) => {
+      logger.warn('Email worker: job STALLED ⚠️', {
+        jobId,
+        timestamp: new Date().toISOString(),
       });
     });
-    worker.on('stalled', (jobId) => {
-      logger.warn('Email worker: job STALLED ⚠️', { jobId });
+
+    // ── Lifecycle: error ──────────────────────────────────────────
+    worker.on('error', (err: Error) => {
+      // A connection-level error, not a per-job failure.
+      // If Redis drops, redisConnected flips false.
+      const isRedisErr = /ECONNREFUSED|ENOTFOUND|connect ETIMEDOUT/i.test(err.message);
+      if (isRedisErr) workerHealth.redisConnected = false;
+      logger.error('Email worker: connection/runtime error', {
+        error:     err.message,
+        timestamp: new Date().toISOString(),
+      });
     });
+
+    // ── Lifecycle: closed ─────────────────────────────────────────
+    worker.on('closed', () => {
+      workerHealth.workerRunning = false;
+      workerHealth.workerClosed  = true;
+      logger.info('Email worker: worker CLOSED', {
+        timestamp: new Date().toISOString(),
+      });
+    });
+
+    workerHealth.workerRunning  = true;
+    workerHealth.workerClosed   = false;
+    workerHealth.redisConnected = true;
+    workerHealth.startedAt      = workerHealth.startedAt ?? new Date().toISOString();
 
     logger.info(`🚀 Email worker started on queue: ${QUEUE_NAME} [concurrency=${CONCURRENCY}]`);
   } catch (err) {
     const error = err as Error;
+    workerHealth.workerRunning = false;
+    logger.error(`WORKER STARTUP CHECK FAILED: ${error.message}`);
     if (isDev) {
       logger.warn(`⚠️  Email worker could not start (Redis unavailable): ${error.message}`);
       return null;
@@ -438,9 +635,15 @@ export function startEmailWorker(): Worker | null {
 }
 
 export async function stopEmailWorker(): Promise<void> {
+  await Promise.allSettled([
+    worker?.close(),
+    emailQueueEvents.close(),
+  ]);
+
   if (worker) {
-    await worker.close();
     worker = null;
-    logger.info('Email worker stopped gracefully');
+    workerHealth.workerRunning = false;
+    workerHealth.workerClosed  = true;
+    logger.info('Email worker stopped gracefully', { timestamp: new Date().toISOString() });
   }
 }

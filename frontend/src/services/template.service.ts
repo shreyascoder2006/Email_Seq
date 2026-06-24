@@ -26,8 +26,28 @@ export const templateService = {
     await api.delete(`/templates/${id}`);
   },
 
+  getMergeTags: async (): Promise<{ 
+    contact: { tag: string, label: string, desc: string }[], 
+    custom: { tag: string, label: string, desc: string }[],
+    sender: { tag: string, label: string, desc: string }[],
+    sequence: { tag: string, label: string, desc: string }[]
+  }> => {
+    const response = await api.get('/templates/merge-tags');
+    return response.data.data || response.data;
+  },
+
   preview: async (id: string): Promise<{ html: string; subject: string }> => {
     const response = await api.post(`/templates/${id}/preview`);
+    return response.data.data || response.data;
+  },
+
+  previewRaw: async (data: { html: string; subject: string }): Promise<{ html: string; subject: string }> => {
+    const response = await api.post(`/templates/raw/preview`, data);
+    return response.data.data || response.data;
+  },
+
+  createCustomMergeTag: async (data: { key: string, label: string }): Promise<any> => {
+    const response = await api.post('/templates/merge-tags/custom', data);
     return response.data.data || response.data;
   },
 };

@@ -10,6 +10,8 @@ export { Template }          from './Template';
 export { Sequence }          from './Sequence';
 export { SequenceStep }      from './SequenceStep';
 export { SequenceContact }   from './SequenceContact';
+export { ImportList }        from './ImportList';
+export { ImportedContact }   from './ImportedContact';
 
 // ─── Event log models ─────────────────────────────────────────────
 export { SendingLog }  from './SendingLog';
@@ -29,6 +31,8 @@ export type { IReplyLog }         from './ReplyLog';
 export type { IBounceLog }        from './BounceLog';
 export type { IOpenLog }          from './OpenLog';
 export type { IClickLog }         from './ClickLog';
+export type { IImportList, FieldMapping }    from './ImportList';
+export type { IImportedContact, MappedContactData } from './ImportedContact';
 
 // ─── Enums (re-export for use in validators / routes) ──────────────
 export { SmtpEncryption, ConnectionStatus, ProviderType } from './EmailConnection';
@@ -39,3 +43,4 @@ export { ContactEnrollmentStatus, UnsubscribeSource }     from './SequenceContac
 export { SendStatus }                                     from './SendingLog';
 export { ReplyClassification }                            from './ReplyLog';
 export { BounceType, BounceSubType }                      from './BounceLog';
+export { ImportListStatus }                               from './ImportList';

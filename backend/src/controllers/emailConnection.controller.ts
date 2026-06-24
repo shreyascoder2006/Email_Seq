@@ -96,7 +96,16 @@ export async function deleteEmailAccount(
 ): Promise<void> {
   try {
     const userId = getUserId(req);
-    await emailConnectionService.delete(userId, req.params.id);
+    const result = await emailConnectionService.delete(userId, req.params.id);
+
+    if (!result.success) {
+      res.status(400).json({
+        success: false,
+        message: result.message,
+        affected_sequences: result.affected_sequences
+      });
+      return;
+    }
 
     logger.info('Email account deleted via API', {
       userId,

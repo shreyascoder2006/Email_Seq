@@ -95,10 +95,19 @@ export const PatchContactStatusSchema = z.object({
     .describe('Optional reason for the status change (stored in last_error)'),
 });
 
+// ─── POST / PATCH Bulk Actions ──────────────────────────────────────
+export const BulkContactActionSchema = z.object({
+  contactIds: z
+    .array(objectIdField)
+    .min(1, 'At least one contact ID is required')
+    .max(1000, 'Maximum 1000 contacts per batch'),
+});
+
 // ─── Inferred types ────────────────────────────────────────────────
 export type EnrollContactsDto       = z.infer<typeof EnrollContactsSchema>;
 export type ListContactsQueryDto    = z.infer<typeof ListContactsQuerySchema>;
 export type PatchContactStatusDto   = z.infer<typeof PatchContactStatusSchema>;
+export type BulkContactActionDto    = z.infer<typeof BulkContactActionSchema>;
 export type SequenceIdParam         = z.infer<typeof SequenceIdParamSchema>;
 export type ContactParam            = z.infer<typeof ContactParamSchema>;
 export type EnrollContactItem       = z.infer<typeof EnrollContactSchema>;

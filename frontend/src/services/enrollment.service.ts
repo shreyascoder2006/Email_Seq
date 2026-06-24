@@ -2,8 +2,7 @@ import api from './api';
 import type { 
   SequenceContact, 
   EnrollContactsDto, 
-  PaginatedResponse,
-  ContactEnrollmentStatus 
+  PaginatedResponse
 } from '../types';
 
 export const enrollmentService = {
@@ -35,5 +34,20 @@ export const enrollmentService = {
   ): Promise<SequenceContact> => {
     const response = await api.patch(`/sequences/${sequenceId}/contacts/${contactId}`, { status, reason });
     return response.data.data || response.data;
+  },
+
+  bulkDelete: async (sequenceId: string, contactIds: string[]) => {
+    const response = await api.post(`/sequences/${sequenceId}/contacts/bulk-delete`, { contactIds });
+    return response.data;
+  },
+
+  bulkPause: async (sequenceId: string, contactIds: string[]) => {
+    const response = await api.patch(`/sequences/${sequenceId}/contacts/pause`, { contactIds });
+    return response.data;
+  },
+
+  bulkResume: async (sequenceId: string, contactIds: string[]) => {
+    const response = await api.patch(`/sequences/${sequenceId}/contacts/resume`, { contactIds });
+    return response.data;
   },
 };
