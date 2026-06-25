@@ -320,6 +320,9 @@ export class EmailConnectionService {
         port: doc.smtp_port,
         secure: doc.smtp_encryption === 'ssl',
         auth: authConfig,
+        tls: {
+          rejectUnauthorized: doc.provider !== 'custom',
+        },
         connectionTimeout: 10_000,
         greetingTimeout:   8_000,
       });
@@ -382,7 +385,7 @@ export class EmailConnectionService {
       };
 
       const socket = useSSL
-        ? tls.connect({ host, port, rejectUnauthorized: false }, onConnect)
+        ? tls.connect({ host, port, rejectUnauthorized: doc.provider !== 'custom' }, onConnect)
         : net.connect({ host, port }, onConnect);
 
       socket.on('error', onError);

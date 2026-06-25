@@ -20,7 +20,15 @@ import { Sequence } from '../models/Sequence';
 import { env, isDev } from '../config/env';
 import logger from '../config/logger';
 import { emailQueue } from './emailQueue';
-import { isSlotValid, calculateNextValidSlot, getLocalParts, isAllowedDay, SendingWindow } from '@email-sequencing/shared';
+import { 
+  calculateNextValidSlot, 
+  toSequenceLocalTime, 
+  isAllowedWeekday, 
+  isWithinSendingWindow,
+  SchedulerDecision
+} from '../utils/scheduling';
+import { SendingWindow, SendingSchedule } from '../models/Sequence';
+import { DateTime } from 'luxon';
 
 // ─── Queue names ───────────────────────────────────────────────────
 const SCHEDULER_QUEUE_NAME = 'sequence-scheduler';
@@ -74,9 +82,19 @@ let stuckQueueCycles = 0;
  * Polls for due contacts and enqueues email:send jobs.
  * Runs every SCHEDULER_INTERVAL_MINUTES (default: 5 min).
  */
-async function runScheduler(_job: Job): Promise<void> {
+export async function runScheduler(_job?: Job): Promise<void> {
   const tickStartTime = new Date().toISOString();
-  logger.info(`[TEMPORARY LOG] Scheduler Tick Started at ${tickStartTime}`, { jobId: _job?.id, name: _job?.name });
+  
+  const isImmediate = _job?.name === 'scheduler:tick:immediate';
+  const tickSource = isImmediate ? 'activation_immediate' : 'periodic';
+  const sequenceScope = (_job?.data as any)?.sequenceId;
+  
+  logger.info(`[TEMPORARY LOG] Scheduler Tick Started at ${tickStartTime}`, { 
+    jobId: _job?.id, 
+    tickSource,
+    sequenceScope: sequenceScope || 'global'
+  });
+  
   const now = new Date();
 
   logger.debug(`Scheduler tick — scanning for due contacts (batch: ${BATCH_SIZE})`);
@@ -137,33 +155,39 @@ async function runScheduler(_job: Job): Promise<void> {
     local_time_env: new Date().toString(),
   });
 
-  // Find due contacts
-  const exactQuery = {
-    status:       ContactEnrollmentStatus.ACTIVE,
-    next_send_at: { $lte: now },
+  // Find due contacts (we will fetch ANY contact that is active to do the `skip_not_due` logic cleanly if needed, but wait: scanning ALL active contacts every 5 minutes is heavy. The prompt asks to add `skip_not_due` when a contact is evaluated and it has a future valid next_send_at. So we should query for due contacts + a small buffer, or just query active contacts, or wait: the scheduler currently queries `{ $lte: now }`. If we only query `$lte: now`, we will NEVER see `skip_not_due` because they are in the future. To fulfill Scenario K, we must evaluate contacts that are NOT due yet.
+  // Actually, we can just query a batch of contacts (e.g. 50 due, and 10 future) just to log it, OR we query the first N active contacts regardless of due date, and log `skip_not_due` for those in the future.
+  // Let's query up to BATCH_SIZE active contacts sorted by next_send_at asc.
+  const exactQuery: any = {
+    status: ContactEnrollmentStatus.ACTIVE,
   };
   
-  logger.info(`[TEMPORARY LOG] Exact query used to fetch due contacts:`, { query: exactQuery });
+  if (sequenceScope) {
+    exactQuery.sequence_id = sequenceScope;
+  }
+  
+  logger.info(`[TEMPORARY LOG] Exact query used to fetch contacts for evaluation:`, { query: exactQuery });
 
-  const dueContacts = await SequenceContact.find(exactQuery)
+  const activeContacts = await SequenceContact.find(exactQuery)
+    .sort({ next_send_at: 1 })
     .limit(BATCH_SIZE)
     .select('_id sequence_id current_step_index next_send_at contact_email')
     .lean();
 
-  if (dueContacts.length === 0) {
+  if (activeContacts.length === 0) {
     logger.debug('Scheduler: no due contacts found');
     logger.info(`[TEMPORARY LOG] Scheduler Tick Finished at ${new Date().toISOString()}`);
     return;
   }
 
-  // Batch-load sequences to avoid N+1 lookups
-  const sequenceIds = [...new Set(dueContacts.map(c => c.sequence_id))];
+  const sequenceIds = [...new Set(activeContacts.map(c => c.sequence_id))];
   const sequences = await Sequence.find({ _id: { $in: sequenceIds } }).lean();
   const sequenceMap = new Map(sequences.map(s => [s._id.toString(), s]));
 
   const jobs = [];
+  const nowUtcDt = DateTime.fromJSDate(now).toUTC();
 
-  for (const c of dueContacts) {
+  for (const c of activeContacts) {
     const sequence = sequenceMap.get(c.sequence_id.toString());
     if (!sequence) {
       logger.error('Scheduler: sequence not found for contact', { contactId: c._id.toString(), sequenceId: c.sequence_id.toString() });
@@ -171,53 +195,101 @@ async function runScheduler(_job: Job): Promise<void> {
     }
 
     const window = sequence.sending_window as SendingWindow;
-    const isValid = isSlotValid(now, window);
-    const { hour, minute, weekday } = getLocalParts(now, window.timezone || 'UTC');
+    const launchDate = sequence.launch_date;
+    const localNow = toSequenceLocalTime(now, window.timezone);
+    const startMin = window.start_hour * 60 + window.start_minute;
+    const endMin = window.end_hour * 60 + window.end_minute;
+    const currMin = localNow.hour * 60 + localNow.minute;
 
-    const startMin = window.start_hour * 60 + (window.start_minute || 0);
-    const endMin = window.end_hour * 60 + (window.end_minute || 0);
-    const currMin = hour * 60 + minute;
-    const activeMatch = isAllowedDay(weekday, window);
+    const contactNextSendAt = c.next_send_at;
+    const isDue = contactNextSendAt && contactNextSendAt <= now;
+    
+    // Map custom days for logging
+    const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    let activeDays: string[] = [];
+    if (window.schedule === SendingSchedule.ALL_DAYS) activeDays = dayNames;
+    else if (window.schedule === SendingSchedule.WEEKDAYS_ONLY) activeDays = ['Mon','Tue','Wed','Thu','Fri'];
+    else activeDays = (window.custom_days || []).map(d => dayNames[d]);
 
-    let rejectionReason = null;
-    if (!isValid) {
-      if (!activeMatch) rejectionReason = 'Inactive day';
-      else if (currMin < startMin) rejectionReason = 'Before window start';
-      else rejectionReason = 'After window end';
+    let decision: SchedulerDecision['decision'] = 'reschedule_to_next_slot';
+    let reason = '';
+    let nextSendAt = contactNextSendAt;
+    
+    if (!isDue) {
+      decision = 'skip_not_due';
+      reason = 'Contact is not due yet. Future next_send_at is already valid.';
+    } else {
+      // Evaluate if we can send now
+      const isDayValid = isAllowedWeekday(localNow.weekday, window);
+      const isTimeValid = isWithinSendingWindow(localNow, window);
+      let isPastLaunch = true;
+      if (launchDate) {
+        const launchDt = toSequenceLocalTime(launchDate, window.timezone);
+        if (localNow < launchDt) isPastLaunch = false;
+      }
+
+      if (!isPastLaunch) {
+        decision = 'skip_future_campaign';
+        reason = 'Launch date has not arrived yet.';
+      } else if (!isDayValid) {
+        decision = 'skip_invalid_day';
+        reason = `Current weekday (${localNow.weekdayLong}) is not allowed.`;
+      } else if (!isTimeValid) {
+        decision = 'skip_outside_window';
+        if (currMin < startMin) reason = `Current local time ${localNow.toFormat('HH:mm')} is before window start.`;
+        else reason = `Current local time ${localNow.toFormat('HH:mm')} is after window end.`;
+      } else {
+        decision = 'enqueue_now';
+        reason = 'Inside valid window, correct day, and past launch date.';
+      }
     }
 
-    logger.info('DEBUG SCHEDULER DIAGNOSTIC:', {
-      sequenceId: sequence._id.toString(),
-      timezone: window.timezone,
-      currentLocalTime: `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`,
-      currentWeekday: weekday,
-      activeDayMatch: activeMatch,
-      windowStart: `${window.start_hour.toString().padStart(2, '0')}:${(window.start_minute || 0).toString().padStart(2, '0')}`,
-      windowEnd: `${window.end_hour.toString().padStart(2, '0')}:${(window.end_minute || 0).toString().padStart(2, '0')}`,
-      result: isValid ? 'allowed' : 'blocked',
-      rejectionReason
-    });
-
-    if (isValid) {
+    if (decision === 'enqueue_now') {
+      const uniqueJobId = `email-send-${c._id.toString()}-${c.current_step_index}`;
       jobs.push({
         name: 'email:send',
         data: {
           sequenceContactId: c._id.toString(),
           stepIndex:         c.current_step_index,
+          tickSource,
+          sequenceId: sequence._id.toString()
         },
         opts: {
+          jobId:            uniqueJobId, // Duplicate-send protection
           attempts:         3,
           backoff:          { type: 'exponential', delay: 30_000 },
           removeOnComplete: { count: 1000, age: 7  * 24 * 3600 },
           removeOnFail:     { count: 500,  age: 30 * 24 * 3600 },
         },
       });
-    } else {
-      // Recalculate and push next_send_at forward without enqueueing
-      const nextSendAt = calculateNextValidSlot(now, window);
+    } else if (decision !== 'skip_not_due') {
+      // It was due, but we couldn't send it. Reschedule to next valid slot.
+      nextSendAt = calculateNextValidSlot(now, window, launchDate);
       await SequenceContact.updateOne({ _id: c._id }, { next_send_at: nextSendAt });
-      logger.info('Scheduler: contact pushed to next window', { contactId: c._id.toString(), nextSendAt: nextSendAt.toISOString() });
     }
+
+    // Build Diagnostic Log
+    const diagnosticLog: SchedulerDecision = {
+      sequenceId: sequence._id.toString(),
+      contactId: c._id.toString(),
+      nowUtc: nowUtcDt.toISO()!,
+      sequenceTimezone: window.timezone,
+      localNow: localNow.toFormat('HH:mm'),
+      activeDays,
+      window: { 
+        start: `${window.start_hour.toString().padStart(2, '0')}:${window.start_minute.toString().padStart(2, '0')}`, 
+        end: `${window.end_hour.toString().padStart(2, '0')}:${window.end_minute.toString().padStart(2, '0')}` 
+      },
+      launchDateLocal: launchDate ? toSequenceLocalTime(launchDate, window.timezone).toISO() : null,
+      contactNextSendAtUtc: contactNextSendAt ? DateTime.fromJSDate(contactNextSendAt).toUTC().toISO() : null,
+      contactNextSendAtLocal: contactNextSendAt ? toSequenceLocalTime(contactNextSendAt, window.timezone).toISO() : null,
+      decision,
+      computedNextSendAtUtc: nextSendAt ? DateTime.fromJSDate(nextSendAt).toUTC().toISO() : null,
+      computedNextSendAtLocal: nextSendAt ? toSequenceLocalTime(nextSendAt, window.timezone).toISO() : null,
+      reason
+    };
+
+    logger.info('DEBUG SCHEDULER DIAGNOSTIC: ' + JSON.stringify(diagnosticLog));
   }
 
   let enqueuedCount = 0;
@@ -239,12 +311,14 @@ async function runScheduler(_job: Job): Promise<void> {
 
   // Update Scheduler Health Metrics
   schedulerHealth.lastSchedulerRunAt = now.toISOString();
-  schedulerHealth.lastDueContactsFound = dueContacts.length;
+  schedulerHealth.lastDueContactsFound = activeContacts.length;
   schedulerHealth.lastJobsEnqueued = enqueuedCount;
 
   logger.info('Scheduler heartbeat:', {
+    tickSource,
+    sequenceScope: sequenceScope || 'global',
     active_sequences,
-    due_contacts: dueContacts.length,
+    due_contacts: activeContacts.length,
     jobs_enqueued: enqueuedCount
   });
 
@@ -269,7 +343,7 @@ async function runScheduler(_job: Job): Promise<void> {
       stuckQueueCycles = 0;
     }
   }
-  logger.info(`[TEMPORARY LOG] Scheduler Tick Finished at ${new Date().toISOString()}`);
+  logger.info(`[TEMPORARY LOG] Scheduler Tick Finished at ${new Date().toISOString()}`, { tickSource, sequenceScope: sequenceScope || 'global', enqueuedCount });
 }
 
 // ─── Start scheduler ───────────────────────────────────────────────
@@ -419,6 +493,15 @@ export async function stopScheduler(): Promise<void> {
     schedulerQueue?.close(),
   ]);
   logger.info('Scheduler + email queue shut down');
+}
+
+/**
+ * Returns the live schedulerQueue instance.
+ * Use this instead of the raw `schedulerQueue` export because
+ * in CommonJS the exported `let` value is a snapshot (null until startScheduler runs).
+ */
+export function getSchedulerQueue(): Queue | null {
+  return schedulerQueue;
 }
 
 export { schedulerQueue };

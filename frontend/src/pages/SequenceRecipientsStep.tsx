@@ -119,7 +119,7 @@ export function SequenceRecipientsStep() {
         <WizardHeader
           sequence={sequence}
           onBack={() => navigate('/sequences')}
-          currentStepId="recipients"
+          currentStepId="import-recipients"
           onToggleStatus={handleToggleStatus}
         />
       </div>
@@ -151,8 +151,8 @@ export function SequenceRecipientsStep() {
               <div className="flex flex-col items-center" style={{ width: 120 }}>
                 <div className="w-16 h-16 rounded-full border-2 border-gray-200 bg-white flex items-center justify-center shadow-sm">
                   <svg className="w-7 h-7 text-gray-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
-                    <polyline points="22,6 12,13 2,6"/>
+                    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
+                    <polyline points="22,6 12,13 2,6" />
                   </svg>
                 </div>
                 <p className="text-[13px] font-semibold text-gray-400 mt-3 text-center leading-snug">Email Steps</p>
@@ -167,10 +167,10 @@ export function SequenceRecipientsStep() {
               <div className="flex flex-col items-center" style={{ width: 120 }}>
                 <div className="w-16 h-16 rounded-full border-2 border-gray-200 bg-white flex items-center justify-center shadow-sm">
                   <svg className="w-7 h-7 text-gray-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/>
-                    <path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/>
-                    <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/>
-                    <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>
+                    <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z" />
+                    <path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z" />
+                    <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0" />
+                    <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
                   </svg>
                 </div>
                 <p className="text-[13px] font-semibold text-gray-400 mt-3 text-center leading-snug">Launch Sequence</p>
@@ -187,8 +187,8 @@ export function SequenceRecipientsStep() {
               <div className="w-[220px] flex items-start gap-3 p-4 rounded-2xl border border-gray-200 bg-white shadow-sm">
                 <div className="w-10 h-10 rounded-xl bg-[#F4F2FA] flex items-center justify-center shrink-0">
                   <svg className="w-5 h-5 text-[#5B4CFF]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <rect x="3" y="3" width="7" height="4" rx="1"/><rect x="3" y="10" width="7" height="11" rx="1"/>
-                    <rect x="13" y="3" width="8" height="11" rx="1"/><rect x="13" y="17" width="8" height="4" rx="1"/>
+                    <rect x="3" y="3" width="7" height="4" rx="1" /><rect x="3" y="10" width="7" height="11" rx="1" />
+                    <rect x="13" y="3" width="8" height="11" rx="1" /><rect x="13" y="17" width="8" height="4" rx="1" />
                   </svg>
                 </div>
                 <div>

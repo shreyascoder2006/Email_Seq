@@ -113,15 +113,20 @@ emailQueueEvents.on('failed', ({ jobId, failedReason }) => {
 // ─── Email Send Processor ─────────────────────────────────────────
 // Exported so debug endpoints can invoke it directly without BullMQ.
 export async function processEmailSend(job: Job): Promise<void> {
-  const { sequenceContactId, stepIndex } = job.data as {
+  const { sequenceContactId, stepIndex, tickSource, sequenceId } = job.data as {
     sequenceContactId: string;
     stepIndex:         number;
+    tickSource?:       string;
+    sequenceId?:       string;
   };
 
   logger.info('📨 Email worker: job received', {
+    pickupTimestamp: new Date().toISOString(),
+    tickSource: tickSource || 'unknown',
     jobId: job.id,
-    sequenceContactId,
-    stepIndex,
+    sequenceId: sequenceId || 'unknown',
+    contactId: sequenceContactId,
+    stepId: stepIndex, // Using index as step reference for now
   });
 
   // 1. Re-fetch contact (idempotency check)
@@ -190,18 +195,41 @@ export async function processEmailSend(job: Job): Promise<void> {
     throw new UnrecoverableError(`Step or sequence not found — marking contact failed`);
   }
 
-  // ⚠️ Critical: prefer step-level connection, fall back to contact-level.
-  // If BOTH are undefined, throw a clear error rather than silently failing.
-  const connectionId = (step as any).email_connection_id ?? contact.email_connection_id;
+  // 3. Ownership Integrity Check - Documents
+  if (!sequence.user_id.equals(contact.user_id) || !sequence.user_id.equals(step.user_id)) {
+    const errorMsg = `Ownership mismatch: Sequence (${sequence.user_id}), Contact (${contact.user_id}), Step (${step.user_id})`;
+    logger.error('Email worker: ownership mismatch — UnrecoverableError', { sequenceContactId, errorMsg });
+    
+    contact.status = ContactEnrollmentStatus.FAILED;
+    contact.failed_at = new Date();
+    contact.last_error = errorMsg;
+    contact.next_send_at = null;
+    await contact.save();
+
+    throw new UnrecoverableError(errorMsg);
+  }
+
+  // ⚠️ Critical: prefer step-level connection, fall back to sequence-level.
+  // We strictly ignore contact.email_connection_id to avoid data drift.
+  const connectionId = (step as any).email_connection_id ?? sequence.email_connection_id;
+  const senderSource = (step as any).email_connection_id ? 'step' : 'fallback_sequence';
 
   if (!connectionId) {
-    logger.error('Email worker: no email_connection_id found on step or contact — UnrecoverableError', {
+    logger.error('Email worker: no email_connection_id found on step or sequence — UnrecoverableError', {
       stepId: step._id,
       sequenceContactId,
       stepIndex,
     });
+
+    // CRITICAL: Mark contact as failed so the scheduler does not pick it up again
+    contact.status = ContactEnrollmentStatus.FAILED;
+    contact.failed_at = new Date();
+    contact.last_error = `No email_connection_id on step ${step._id} or sequence. Edit sequence step to select sender.`;
+    contact.next_send_at = null;
+    await contact.save();
+
     throw new UnrecoverableError(
-      `No email_connection_id on step ${step._id} or contact ${sequenceContactId}. ` +
+      `No email_connection_id on step ${step._id} or sequence. ` +
       `Edit the sequence step and re-select the sending account.`
     );
   }
@@ -211,17 +239,44 @@ export async function processEmailSend(job: Job): Promise<void> {
     EmailConnection.findById(connectionId),
   ]);
 
-  logger.info('Email worker: email account and template loaded', {
-    connectionId,
-    connectionFound: !!connection,
-    templateId: step.template_id,
-    templateFound: !!template,
-    fromEmail: connection?.from_email,
+  logger.info('Email worker: Diagnostics Check - Resolved Sender', {
+    sequenceId: contact.sequence_id.toString(),
+    contactId: contact._id.toString(),
+    stepId: step._id.toString(),
+    resolved_email_connection_id: connectionId.toString(),
+    resolved_sender_email: connection?.from_email || 'NOT_FOUND',
+    sender_source: senderSource,
+    smtpHost: connection?.smtp_host,
+    smtpPort: connection?.smtp_port,
+    accountStatus: connection?.status || 'NOT_FOUND',
   });
 
   if (!connection) {
     logger.error('Email worker: email connection not found — UnrecoverableError', { connectionId });
     throw new UnrecoverableError(`Email connection ${connectionId} not found`);
+  }
+
+  // 4. Ownership Integrity Check - Dependencies
+  if (!sequence.user_id.equals(connection.user_id)) {
+    const errorMsg = `Ownership mismatch: EmailConnection (${connection.user_id}) does not match Sequence (${sequence.user_id})`;
+    logger.error('Email worker: ownership mismatch — UnrecoverableError', { sequenceContactId, errorMsg });
+    contact.status = ContactEnrollmentStatus.FAILED;
+    contact.failed_at = new Date();
+    contact.last_error = errorMsg;
+    contact.next_send_at = null;
+    await contact.save();
+    throw new UnrecoverableError(errorMsg);
+  }
+
+  if (template && !sequence.user_id.equals(template.user_id)) {
+    const errorMsg = `Ownership mismatch: Template (${template.user_id}) does not match Sequence (${sequence.user_id})`;
+    logger.error('Email worker: ownership mismatch — UnrecoverableError', { sequenceContactId, errorMsg });
+    contact.status = ContactEnrollmentStatus.FAILED;
+    contact.failed_at = new Date();
+    contact.last_error = errorMsg;
+    contact.next_send_at = null;
+    await contact.save();
+    throw new UnrecoverableError(errorMsg);
   }
 
   if (connection.status !== ConnectionStatus.ACTIVE) {
@@ -331,6 +386,9 @@ export async function processEmailSend(job: Job): Promise<void> {
     port:   connection.smtp_port,
     secure: connection.smtp_encryption === 'ssl',
     auth:   authConfig,
+    tls: {
+      rejectUnauthorized: connection.provider !== 'custom',
+    },
     connectionTimeout: 15_000,
   });
 
@@ -469,7 +527,8 @@ export async function processEmailSend(job: Job): Promise<void> {
     stepIndex,
     messageId,
     allSteps,
-    sequence.sending_window as any
+    sequence.sending_window as any,
+    sequence.launch_date
   );
 
   logger.info('Email sent successfully', {

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { Send, Search, Filter, Download, Trash2, Gift } from 'lucide-react';
 import { EmptyState } from '../components/ui/EmptyState';
 import { Button } from '../components/ui/Button';
@@ -12,7 +12,6 @@ import type { Sequence } from '../types';
 
 export const Sequences: React.FC = () => {
   const navigate = useNavigate();
-  const location = useLocation();
   const [sequences, setSequences] = useState<Sequence[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -30,11 +29,12 @@ export const Sequences: React.FC = () => {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('');
 
-  // Debounce search input
+  // Debounce search: fires once after user stops typing for 500ms.
+  // Simple and correct — no stale-closure issues.
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedSearch(search);
-      setPage(1); // reset to page 1 on search
+      setPage(1);
     }, 500);
     return () => clearTimeout(timer);
   }, [search]);
@@ -44,10 +44,10 @@ export const Sequences: React.FC = () => {
     setFetchTrigger(t => t + 1);
   }, []);
 
-  // Refetch whenever we navigate back to /sequences (e.g., after editing recipients)
-  useEffect(() => {
-    setFetchTrigger(t => t + 1);
-  }, [location.pathname]);
+  // NOTE: No location.pathname watcher here.
+  // React Router fully unmounts Sequences when navigating to builder/wizard/recipients
+  // (they are separate top-level routes), so the component remounts cleanly on
+  // navigation back and triggers a single fresh fetch via the effect below.
 
   useEffect(() => {
     const controller = new AbortController();

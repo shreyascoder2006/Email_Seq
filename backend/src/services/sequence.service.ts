@@ -2,8 +2,9 @@ import { Types, FilterQuery } from 'mongoose';
 import { Sequence, ISequence, SequenceStatus } from '../models/Sequence';
 import { SequenceStep, ISequenceStep, StepType } from '../models/SequenceStep';
 import { SequenceContact } from '../models/SequenceContact';
-import { calculateNextValidSlot } from '@email-sequencing/shared';
+import { calculateNextValidSlot } from '../utils/scheduling';
 import { EmailConnection, ConnectionStatus } from '../models/EmailConnection';
+import { getSchedulerQueue } from '../queues/schedulerQueue';
 import { Template } from '../models/Template';
 import { AppError } from '../utils/AppError';
 import logger from '../config/logger';
@@ -291,36 +292,24 @@ export class SequenceService {
     // If activating, bump active contacts' next_send_at so scheduler picks them up
     if (to === SequenceStatus.ACTIVE && from !== SequenceStatus.ACTIVE) {
       const now = new Date();
-      const adjustedNextSendAt = calculateNextValidSlot(now, seq.sending_window as any);
+      const adjustedNextSendAt = calculateNextValidSlot(now, seq.sending_window as any, seq.launch_date);
       
-      // Log before values
-      const beforeContacts = await SequenceContact.find({
+      const allActiveContacts = await SequenceContact.find({
         sequence_id: sequenceId,
         status: 'active',
-        $or: [
-          { next_send_at: { $lte: now } },
-          { next_send_at: null }
-        ]
-      }).select('_id next_send_at').lean();
+      }).select('_id status current_step_index next_send_at').lean();
 
-      logger.info('DEBUG ACTIVATION: Before values', {
-        contacts: beforeContacts.map(c => ({
-          contactId: c._id.toString(),
-          next_send_at: c.next_send_at?.toISOString() ?? null
-        }))
-      });
+      const activeCountBefore = allActiveContacts.length;
 
-      // Log activation changes including sequenceId, previous_next_send_at, adjusted_next_send_at, sending_window
-      for (const contact of beforeContacts) {
-        logger.info('Sequence activation contact next_send_at adjustment', {
-          sequenceId: sequenceId.toString(),
-          contactId: contact._id.toString(),
-          previous_next_send_at: contact.next_send_at?.toISOString() ?? null,
-          adjusted_next_send_at: adjustedNextSendAt.toISOString(),
-          sending_window: seq.sending_window,
-        });
-      }
+      // Sample before states
+      const sampleBefore = allActiveContacts.slice(0, 5).map(c => ({
+        contactId: c._id.toString(),
+        status: c.status,
+        current_step_index: c.current_step_index,
+        next_send_at: c.next_send_at ? c.next_send_at.toISOString() : null
+      }));
 
+      // Update contacts that are either past due or null
       await SequenceContact.updateMany(
         { 
           sequence_id: sequenceId, 
@@ -333,19 +322,67 @@ export class SequenceService {
         { $set: { next_send_at: adjustedNextSendAt } }
       );
 
-      // Log after values
-      const afterContacts = await SequenceContact.find({
-        _id: { $in: beforeContacts.map(c => c._id) }
-      }).select('_id next_send_at').lean();
+      const allActiveContactsAfter = await SequenceContact.find({
+        sequence_id: sequenceId,
+        status: 'active',
+      }).select('_id status current_step_index next_send_at').lean();
 
-      logger.info('DEBUG ACTIVATION: After values', {
-        contacts: afterContacts.map(c => ({
+      const activeCountAfter = allActiveContactsAfter.length;
+      let countDueImmediately = 0;
+      let countFuture = 0;
+
+      const sampleAfter = allActiveContactsAfter.slice(0, 5).map(c => {
+        const isDue = c.next_send_at && c.next_send_at <= now;
+        if (isDue) countDueImmediately++;
+        else countFuture++;
+        
+        let reason = '';
+        if (!isDue) {
+           reason = (c.next_send_at && c.next_send_at > now) ? 'future date computed' : 'missing next_send_at';
+        }
+
+        return {
           contactId: c._id.toString(),
-          next_send_at: c.next_send_at?.toISOString() ?? null
-        }))
+          status: c.status,
+          current_step_index: c.current_step_index,
+          next_send_at: c.next_send_at ? c.next_send_at.toISOString() : null,
+          is_due_now: isDue,
+          reason_if_not_due: reason
+        };
+      });
+      
+      // Calculate remaining due/future for logging accurately
+      for (let i = 5; i < allActiveContactsAfter.length; i++) {
+        const c = allActiveContactsAfter[i];
+        if (c.next_send_at && c.next_send_at <= now) countDueImmediately++;
+        else countFuture++;
+      }
+
+      logger.info('SEQUENCE ACTIVATION LIFECYCLE - DIAGNOSTICS', {
+        sequenceId: sequenceId.toString(),
+        previousStatus: from,
+        newStatus: to,
+        activationTimestamp: now.toISOString(),
+        activeContactCountBefore: activeCountBefore,
+        activeContactCountAfter: activeCountAfter,
+        contactsDueImmediately: countDueImmediately,
+        contactsScheduledForFuture: countFuture,
+        sampleContactsBefore: sampleBefore,
+        sampleContactsAfter: sampleAfter
       });
 
-      logger.info('Bumped next_send_at for active contacts upon sequence activation', { sequenceId });
+      // Enqueue immediate sequence-scoped tick so Launch Campaign sends without requiring restart
+      const liveSchedulerQueue = getSchedulerQueue();
+      if (liveSchedulerQueue) {
+        await liveSchedulerQueue.add(
+          'scheduler:tick:immediate', 
+          { reason: 'sequence_activation', sequenceId: sequenceId.toString() }, 
+          { removeOnComplete: 5, removeOnFail: 5 }
+        );
+        logger.info('SEQUENCE ACTIVATION: Enqueued immediate sequence-scoped scheduler tick', { sequenceId: sequenceId.toString() });
+      } else {
+        logger.warn('SEQUENCE ACTIVATION: Scheduler queue not initialized — immediate tick skipped. Waiting for periodic tick.', { sequenceId: sequenceId.toString() });
+      }
     }
 
     logger.info('Sequence status transitioned', {
@@ -383,6 +420,8 @@ export class SequenceService {
       await assertTemplateValid(userId, dto.template_id);
       if ((dto as any).email_connection_id) {
         await assertEmailConnectionValid(userId, (dto as any).email_connection_id);
+      } else if (!seq.email_connection_id) {
+        throw AppError.badRequest('An email_connection_id is required for this step because the sequence has no default sender.');
       }
     }
 
@@ -484,6 +523,10 @@ export class SequenceService {
       if (emailDto.email_connection_id) {
         await assertEmailConnectionValid(userId, emailDto.email_connection_id);
         step.email_connection_id = new Types.ObjectId(emailDto.email_connection_id);
+      } else if (!step.email_connection_id && !seq.email_connection_id) {
+        // If the user tries to update to remove the connection ID or if it was already missing,
+        // and the sequence has no default, throw an error.
+        throw AppError.badRequest('An email_connection_id is required because the sequence has no default sender.');
       }
       if (emailDto.subject_override !== undefined)    step.subject_override   = emailDto.subject_override;
       if (emailDto.body_html_override !== undefined)  step.body_html_override = emailDto.body_html_override;

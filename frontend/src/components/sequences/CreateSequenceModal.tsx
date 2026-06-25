@@ -31,10 +31,10 @@ const wizardSchema = z.object({
 }).refine(data => {
   const [sh, sm] = data.start_time_str.split(':').map(Number);
   const [eh, em] = data.end_time_str.split(':').map(Number);
-  return (sh * 60 + sm) < (eh * 60 + em);
+  return ((eh * 60 + em) - (sh * 60 + sm)) === 30;
 }, {
-  message: 'Start time must be before end time',
-  path: ['start_time_str'],
+  message: 'Sending window must be exactly 30 minutes',
+  path: ['end_time_str'],
 });
 
 type WizardData = z.infer<typeof wizardSchema>;
@@ -121,16 +121,29 @@ export const CreateSequenceModal: React.FC<CreateSequenceModalProps> = ({ isOpen
     formState: { errors },
   } = useForm<WizardData>({
     resolver: zodResolver(wizardSchema),
-    defaultValues: {
-      name: '',
-      sending_preference: 'immediate',
-      timezone: getDefaultTimezone(),
-      start_time_str: '9:00',
-      end_time_str: '17:00',
-      custom_days: [1, 2, 3, 4, 5],
-      daily_sending_limit: 200,
-      launch_date: new Date().toISOString().split('T')[0],
-    },
+    defaultValues: (() => {
+      const now = new Date();
+      const currentMinute = now.getMinutes();
+      const isPast30 = currentMinute >= 30;
+      
+      let sH = now.getHours();
+      let sM = isPast30 ? 30 : 0;
+      
+      let eH = sH;
+      let eM = isPast30 ? 0 : 30;
+      if (isPast30) eH += 1;
+      
+      return {
+        name: '',
+        sending_preference: 'immediate',
+        timezone: getDefaultTimezone(),
+        start_time_str: `${sH}:${sM.toString().padStart(2, '0')}`,
+        end_time_str: `${eH}:${eM.toString().padStart(2, '0')}`,
+        custom_days: [1, 2, 3, 4, 5],
+        daily_sending_limit: 200,
+        launch_date: now.toISOString().split('T')[0],
+      };
+    })(),
     mode: 'onTouched',
   });
 
@@ -424,6 +437,7 @@ export const CreateSequenceModal: React.FC<CreateSequenceModalProps> = ({ isOpen
                     </div>
                   </div>
                   {errors.start_time_str && <p className="text-xs text-red-500 mt-1">{errors.start_time_str.message}</p>}
+                  {errors.end_time_str && <p className="text-xs text-red-500 mt-1">{errors.end_time_str.message}</p>}
 
                   {/* Info banner */}
                   <div className="mt-3 flex items-center gap-2.5 px-4 py-2.5 bg-white border border-[#5B4CFF]/30 rounded-xl">

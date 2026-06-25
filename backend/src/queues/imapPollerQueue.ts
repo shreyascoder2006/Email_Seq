@@ -100,6 +100,9 @@ async function processImapPoll(job: Job): Promise<void> {
       user: connection.imap_username || connection.smtp_username || connection.from_email,
       pass: imapPassword,
     },
+    tls: {
+      rejectUnauthorized: connection.provider !== 'custom',
+    },
     logger: false, // Too noisy
   });
 

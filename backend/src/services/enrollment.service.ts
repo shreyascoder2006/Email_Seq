@@ -28,7 +28,7 @@ export interface EnrollResult {
   nextAvailableWindow?: string;
 }
 
-import { calculateNextValidSlot, SendingWindow } from '@email-sequencing/shared';
+import { calculateNextValidSlot } from '../utils/scheduling';
 
 /**
  * Compute the absolute Date when a step should fire for a contact.
@@ -37,14 +37,15 @@ import { calculateNextValidSlot, SendingWindow } from '@email-sequencing/shared'
 function computeNextSendAt(
   base: Date,
   step: ISequenceStep,
-  sendingWindow: SendingWindow
+  sendingWindow: any,
+  launchDate?: Date
 ): Date {
   const delayMs =
     (step.delay_days  ?? 0) * 24 * 60 * 60 * 1000 +
     (step.delay_hours ?? 0)      * 60 * 60 * 1000;
 
   const raw = new Date(base.getTime() + delayMs);
-  return calculateNextValidSlot(raw, sendingWindow);
+  return calculateNextValidSlot(raw, sendingWindow, launchDate);
 }
 
 // ─── Service ───────────────────────────────────────────────────────
@@ -129,13 +130,13 @@ export class EnrollmentService {
       const nextSendAt = computeNextSendAt(
         startBase,
         firstEmailStep,
-        seq.sending_window as any
+        seq.sending_window,
+        seq.launch_date
       );
 
       docsToInsert.push({
         sequence_id:         new Types.ObjectId(sequenceId),
         user_id:             new Types.ObjectId(userId),
-        email_connection_id: seq.email_connection_id,
         contact_email:       email,
         contact_first_name:  contact.first_name || '',
         contact_last_name:   contact.last_name,
@@ -221,7 +222,7 @@ export class EnrollmentService {
     }
 
     const now = new Date();
-    const nextValid = calculateNextValidSlot(now, seq.sending_window as any);
+    const nextValid = calculateNextValidSlot(now, seq.sending_window as any, seq.launch_date);
     const isOutsideWindow = nextValid.getTime() > now.getTime();
     
     const startHour = seq.sending_window?.start_hour ?? 9;
@@ -332,7 +333,7 @@ export class EnrollmentService {
       contact.paused_at = undefined;
       // If next_send_at was in the past, bump it to now so scheduler picks it up immediately
       if (!contact.next_send_at || contact.next_send_at <= new Date()) {
-        contact.next_send_at = new Date();
+        contact.next_send_at = calculateNextValidSlot(new Date(), seq.sending_window as any, seq.launch_date);
       }
     }
 
@@ -429,8 +430,7 @@ export class EnrollmentService {
     if (contacts.length === 0) return { resumed: 0, updatedStats: { total_contacts: 0, active_contacts: 0, paused_contacts: 0, completed: 0 } };
 
     const now = new Date();
-    // Use the shared calculateNextValidSlot to ensure they don't get stuck in the past
-    const nextValidSlot = calculateNextValidSlot(now, seq.sending_window as any);
+    const nextValidSlot = calculateNextValidSlot(now, seq.sending_window as any, seq.launch_date);
 
     await SequenceContact.updateMany(
       { _id: { $in: contacts.map(c => c._id) } },
@@ -524,7 +524,8 @@ export class EnrollmentService {
       start_hour: number;
       end_hour: number;
       custom_days?: number[];
-    }
+    },
+    launchDate?: Date
   ): Promise<void> {
     // Record this step as sent
     const stepRecord = contact.step_records.find(
@@ -568,9 +569,10 @@ export class EnrollmentService {
       const nextStep = remainingSteps[0];
       contact.current_step_index = nextStep.step_index;
       contact.next_send_at       = computeNextSendAt(
-        new Date(),
+        new Date(), // The base time for follow-up is the time of successful send (now)
         nextStep,
-        sendingWindow
+        sendingWindow,
+        launchDate
       );
     }
 

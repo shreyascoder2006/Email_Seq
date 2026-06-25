@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Check } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
-export type WorkflowStepId = 'schedule' | 'sequence' | 'recipients' | 'preview-test';
+export type WorkflowStepId = 'schedule' | 'sequence' | 'import-recipients' | 'recipients' | 'preview-test';
 
 export interface SequenceWorkflowStepperProps {
   currentStepId: WorkflowStepId;
@@ -23,7 +23,8 @@ export const SequenceWorkflowStepper: React.FC<SequenceWorkflowStepperProps> = (
   const steps: { id: WorkflowStepId; label: string }[] = [
     { id: 'schedule', label: 'Schedule' },
     { id: 'sequence', label: 'Sequence' },
-    { id: 'recipients', label: 'Recipients' },
+    { id: 'import-recipients', label: 'Import Recipients' },
+    { id: 'recipients', label: 'Manage Recipients' },
     { id: 'preview-test', label: 'Preview/Test' },
   ];
 
@@ -34,11 +35,12 @@ export const SequenceWorkflowStepper: React.FC<SequenceWorkflowStepperProps> = (
     if (!sequenceId) return targetId === 'schedule';
 
     const targetIdx = steps.findIndex((s) => s.id === targetId);
-    
+
     // Can always go backward
     if (targetIdx <= currentIdx) return true;
 
     // Forward checks
+    if (targetId === 'import-recipients') return isRecipientsUnlocked;
     if (targetId === 'recipients') return isRecipientsUnlocked;
     if (targetId === 'preview-test') return isPreviewUnlocked;
 
@@ -60,6 +62,8 @@ export const SequenceWorkflowStepper: React.FC<SequenceWorkflowStepperProps> = (
       toast.success('Navigated to sequences. Use settings to edit schedule.');
     } else if (targetId === 'sequence') {
       navigate(`/sequences/${sequenceId}/builder-v2`);
+    } else if (targetId === 'import-recipients') {
+      navigate(`/sequences/${sequenceId}/recipients`);
     } else if (targetId === 'recipients') {
       navigate(`/sequences/${sequenceId}/recipients/manage`);
     } else if (targetId === 'preview-test') {
@@ -76,24 +80,21 @@ export const SequenceWorkflowStepper: React.FC<SequenceWorkflowStepperProps> = (
 
         return (
           <React.Fragment key={step.id}>
-            <button 
+            <button
               onClick={() => handleStepClick(step.id)}
-              className={`flex items-center gap-2 group transition-all ${
-                isCurrent ? 'bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-full' : 'px-1 py-1.5'
-              } ${!isUnlocked ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:opacity-80'}`}
+              className={`flex items-center gap-2 group transition-all ${isCurrent ? 'bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-full' : 'px-1 py-1.5'
+                } ${!isUnlocked ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:opacity-80'}`}
               type="button"
             >
-              <div className={`w-[22px] h-[22px] rounded-full flex items-center justify-center text-[10px] font-bold border transition-colors ${
-                isCurrent ? 'bg-white border-indigo-600 text-indigo-600 shadow-sm' :
-                showCompleted ? 'bg-white border-emerald-500 text-emerald-500' :
-                'bg-white border-gray-300 text-gray-500 group-hover:border-gray-400'
-              }`}>
+              <div className={`w-[22px] h-[22px] rounded-full flex items-center justify-center text-[10px] font-bold border transition-colors ${isCurrent ? 'bg-white border-indigo-600 text-indigo-600 shadow-sm' :
+                  showCompleted ? 'bg-white border-emerald-500 text-emerald-500' :
+                    'bg-white border-gray-300 text-gray-500 group-hover:border-gray-400'
+                }`}>
                 {showCompleted ? <Check className="w-3 h-3 text-emerald-500" /> : idx + 1}
               </div>
-              <span className={`text-[12px] font-bold transition-colors ${
-                isCurrent ? 'text-indigo-700' : 
-                showCompleted ? 'text-gray-900' : 'text-gray-500 group-hover:text-gray-700'
-              }`}>
+              <span className={`text-[12px] font-bold transition-colors ${isCurrent ? 'text-indigo-700' :
+                  showCompleted ? 'text-gray-900' : 'text-gray-500 group-hover:text-gray-700'
+                }`}>
                 {step.label}
               </span>
             </button>

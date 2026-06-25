@@ -58,10 +58,27 @@ const SendingWindowSchema = z.object({
     .array(z.number().int().min(0).max(6))
     .optional()
     .describe('0=Sun … 6=Sat — only for schedule="custom"'),
-}).refine(
+})
+.refine(
+  (d) => {
+    try {
+      Intl.DateTimeFormat(undefined, { timeZone: d.timezone });
+      return true;
+    } catch (e) {
+      return false;
+    }
+  },
+  { message: 'Timezone must be a valid IANA timezone.', path: ['timezone'] }
+)
+.refine(
   (d) => (d.start_hour * 60 + d.start_minute) < (d.end_hour * 60 + d.end_minute),
-  { message: 'start time must be before end time', path: ['start_hour'] }
-).refine(
+  { message: 'Start time must be before end time.', path: ['start_hour'] }
+)
+.refine(
+  (d) => ((d.end_hour * 60 + d.end_minute) - (d.start_hour * 60 + d.start_minute)) === 30,
+  { message: 'Sending window must be exactly 30 minutes.', path: ['end_hour'] }
+)
+.refine(
   (d) => d.schedule !== SendingSchedule.CUSTOM || (d.custom_days && d.custom_days.length > 0),
   { message: 'custom_days is required when schedule is "custom"', path: ['custom_days'] }
 );
@@ -84,7 +101,14 @@ export const CreateSequenceSchema = z.object({
     'The default EmailConnection (SMTP account) to send from (optional)'
   ),
 
-  launch_date: z.coerce.date(),
+  launch_date: z.coerce.date().optional().refine(
+    (d) => {
+      if (!d) return true;
+      // Allow slight past buffer (e.g. 5 minutes) in case of slow API request
+      return d.getTime() > Date.now() - 5 * 60 * 1000;
+    },
+    { message: 'A valid future launch date is required for Schedule Later.' }
+  ),
   daily_sending_limit: z.number().int().min(1).default(100),
   reserved_limit_phase1: z.number().int().min(0).max(100).default(50),
   warmup_percentage: z.number().int().min(0).max(100).optional(),
