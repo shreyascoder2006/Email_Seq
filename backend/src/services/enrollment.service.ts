@@ -16,6 +16,7 @@ import {
   EnrollContactItem,
   BulkContactActionDto,
 } from '../validators/enrollment.validator';
+import { enqueueEmailJob } from '../queues/emailQueue';
 
 // ─── Types ─────────────────────────────────────────────────────────
 export interface EnrollResult {
@@ -210,6 +211,19 @@ export class EnrollmentService {
           step_type: firstEmailStep.type,
           total_steps: contactDoc.total_steps,
         });
+        
+        // Enqueue delayed job immediately
+        if (contactDoc.next_send_at) {
+          enqueueEmailJob(
+            contactDoc._id.toString(),
+            contactDoc.current_step_index,
+            contactDoc.next_send_at,
+            contactDoc.sequence_id.toString(),
+            'enrollment'
+          ).catch(err => {
+            logger.error('Failed to enqueue job for newly enrolled contact', { contactId: contactDoc._id, err: err.message });
+          });
+        }
       }
 
       logger.info('Contacts enrolled', {
@@ -342,6 +356,17 @@ export class EnrollmentService {
     // Recompute sequence stats to reflect the status change
     await this.recomputeSequenceStats(sequenceId);
 
+    // Enqueue if resumed
+    if (contact.status === ContactEnrollmentStatus.ACTIVE && contact.next_send_at) {
+      enqueueEmailJob(
+        contact._id.toString(),
+        contact.current_step_index,
+        contact.next_send_at,
+        contact.sequence_id.toString(),
+        'resume'
+      ).catch(err => logger.error('Failed to enqueue job on resume', { contactId, err: err.message }));
+    }
+
     logger.info('Contact status patched', {
       contactId,
       sequenceId,
@@ -444,6 +469,17 @@ export class EnrollmentService {
     );
 
     const updatedStats = await this.recomputeSequenceStats(sequenceId);
+
+    // Enqueue delayed jobs for all resumed contacts
+    for (const c of contacts) {
+      enqueueEmailJob(
+        c._id.toString(),
+        c.current_step_index,
+        nextValidSlot,
+        c.sequence_id.toString(),
+        'bulk_resume'
+      ).catch(err => logger.error('Failed to enqueue job on bulk resume', { contactId: c._id, err: err.message }));
+    }
 
     logger.info('Bulk resumed contacts', { sequenceId, userId, count: contacts.length });
     return { resumed: contacts.length, updatedStats };

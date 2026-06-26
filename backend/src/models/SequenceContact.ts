@@ -50,6 +50,12 @@ export interface ISequenceContact extends Document {
   // Scheduler state — the two most important fields
   status:       ContactEnrollmentStatus;
   next_send_at: Date | null;      // NULL = no more sends
+  sending_locked: boolean;        // Idempotency lock during processing
+
+  // BullMQ Job State Tracking (for reconciliation)
+  current_job_id?: string;
+  job_state?: string;
+  last_attempt_at?: Date;
 
   // Step tracking
   current_step_index: number;     // next step to execute
@@ -142,6 +148,15 @@ const SequenceContactSchema = new Schema<ISequenceContact>(
       type: Date,
       default: null,
     },
+    sending_locked: {
+      type: Boolean,
+      default: false,
+    },
+
+    // BullMQ Job State Tracking
+    current_job_id:  { type: String, trim: true },
+    job_state:       { type: String, trim: true },
+    last_attempt_at: { type: Date },
 
     // Step state
     current_step_index:  { type: Number, default: 0, min: 0 },

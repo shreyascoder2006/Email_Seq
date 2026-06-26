@@ -8,7 +8,9 @@ import {
   sendPaginated,
 } from '../utils/response';
 import { AppError } from '../utils/AppError';
-import { Sequence } from '../models/Sequence';
+import { Sequence, SendingSchedule } from '../models/Sequence';
+import { calculateNextValidSlot, isAllowedWeekday, isWithinSendingWindow, toSequenceLocalTime } from '../utils/scheduling';
+import { DateTime } from 'luxon';
 
 // ─── Helper ────────────────────────────────────────────────────────
 function uid(req: AuthenticatedRequest): string {
@@ -255,6 +257,106 @@ export async function getSequenceStats(
     }
 
     sendSuccess(res, seq.stats || {}, 'Sequence stats retrieved');
+} catch (err) {
+    next(err);
+  }
+}
+
+// ─── POST /api/sequences/schedule-preview ─────────────────────────
+export async function previewSchedule(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const {
+      timezone,
+      launch_date,
+      active_days,
+      start_hour,
+      start_minute,
+      end_hour,
+      end_minute,
+      daily_cap
+    } = req.body;
+
+    if (!timezone || !Array.isArray(active_days)) {
+      throw AppError.badRequest('Missing or invalid parameters for schedule preview');
+    }
+
+    const window = {
+      timezone,
+      schedule: SendingSchedule.CUSTOM,
+      custom_days: active_days,
+      start_hour: Number(start_hour),
+      start_minute: Number(start_minute),
+      end_hour: Number(end_hour),
+      end_minute: Number(end_minute)
+    };
+
+    const now = new Date();
+    let isLaunchAllowed = false;
+    let reason = '';
+    
+    // Exact same check as runScheduler
+    const launchDateObj = launch_date ? new Date(launch_date) : now;
+    
+    // calculateNextValidSlot determines the exact slot
+    const nextAvailableSlot = calculateNextValidSlot(now, window, launchDateObj);
+    
+    // Now determine if it's "now" vs "future"
+    const localNow = toSequenceLocalTime(now, window.timezone);
+    const startMin = window.start_hour * 60 + window.start_minute;
+    const endMin = window.end_hour * 60 + window.end_minute;
+    const currMin = localNow.hour * 60 + localNow.minute;
+
+    const isDayValid = isAllowedWeekday(localNow.weekday, window);
+    const isTimeValid = isWithinSendingWindow(localNow, window);
+    let isPastLaunch = true;
+    if (launchDateObj) {
+      const launchDt = toSequenceLocalTime(launchDateObj, window.timezone);
+      if (localNow < launchDt) isPastLaunch = false;
+    }
+
+    if (!isPastLaunch) {
+      reason = 'Launch date has not arrived yet.';
+    } else if (!isDayValid) {
+      reason = `Current weekday (${localNow.weekdayLong}) is not allowed.`;
+    } else if (!isTimeValid) {
+      if (currMin < startMin) reason = `Current local time ${localNow.toFormat('HH:mm')} is before window start.`;
+      else reason = `Current local time ${localNow.toFormat('HH:mm')} is after window end.`;
+    } else {
+      reason = 'Inside valid window, correct day, and past launch date.';
+      isLaunchAllowed = true;
+    }
+
+    // Format the response with Luxon
+    const nextDt = DateTime.fromJSDate(nextAvailableSlot).setZone(timezone);
+    const timezoneAbbreviation = nextDt.toFormat('ZZZZ'); // e.g., EDT, IST
+    
+    // Relative time string (e.g. "In 14 minutes", "Tomorrow", etc.)
+    const diff = nextDt.diff(DateTime.local(), ['days', 'hours', 'minutes']).toObject();
+    let relativeTime = '';
+    if (isLaunchAllowed && nextDt.toMillis() <= DateTime.now().toMillis()) {
+      relativeTime = '(Ready to send immediately)';
+    } else if (diff.days && diff.days > 0) {
+      relativeTime = `(In ${diff.days} day${diff.days > 1 ? 's' : ''})`;
+    } else if (diff.hours && diff.hours > 0) {
+      relativeTime = `(In ${diff.hours} hour${diff.hours > 1 ? 's' : ''} and ${Math.round(diff.minutes || 0)} minutes)`;
+    } else {
+      relativeTime = `(In ${Math.round(diff.minutes || 0)} minutes)`;
+    }
+
+    sendSuccess(res, {
+      nextAvailableSlotUtc: nextAvailableSlot.toISOString(),
+      nextAvailableSlotLocal: nextDt.toISO(),
+      timezone,
+      timezoneAbbreviation,
+      relativeTime,
+      reason,
+      isLaunchAllowed
+    }, 'Schedule preview computed');
+
   } catch (err) {
     next(err);
   }

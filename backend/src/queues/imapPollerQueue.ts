@@ -6,7 +6,7 @@ import { SendingLog } from '../models/SendingLog';
 import { ReplyLog, ReplyClassification } from '../models/ReplyLog';
 import { Sequence } from '../models/Sequence';
 import { emailConnectionService } from '../services/emailConnection.service';
-import { env, isDev } from '../config/env';
+import { env } from '../config/env';
 import logger from '../config/logger';
 import { ImapFlow } from 'imapflow';
 
@@ -15,7 +15,10 @@ const IMAP_SCHEDULER_QUEUE = 'imap-scheduler';
 const IMAP_POLL_QUEUE      = 'imap-poll';
 const IMAP_POLL_INTERVAL   = 10; // minutes
 
-function makeConnection() {
+// ─── Connection factory ────────────────────────────────────────────
+// CRITICAL: Every BullMQ instance (Queue, Worker) MUST receive its
+// own dedicated connection object. Sharing causes silent poll failures.
+function makeConnection(label: string) {
   const url = new URL(BULL_REDIS_URL);
   return {
     host: url.hostname,
@@ -24,7 +27,10 @@ function makeConnection() {
     ...(BULL_REDIS_TLS ? { tls: {} } : {}),
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
-    retryStrategy: isDev ? () => null : undefined,
+    retryStrategy: (times: number) => {
+      if (times > 5) return null;
+      return Math.min(times * 500, 2_000);
+    },
   };
 }
 
@@ -86,7 +92,7 @@ async function processImapPoll(job: Job): Promise<void> {
       connection.user_id.toString(),
       connection._id.toString()
     );
-    imapPassword = creds.imapPassword || creds.smtpPassword || ''; // Fallback to SMTP password if IMAP isn't separate
+    imapPassword = creds.imapPassword || creds.smtpPassword || '';
   } catch (err) {
     logger.error(`Failed to decrypt credentials for IMAP: ${connection.label}`, { error: (err as Error).message });
     return;
@@ -103,62 +109,48 @@ async function processImapPoll(job: Job): Promise<void> {
     tls: {
       rejectUnauthorized: connection.provider !== 'custom',
     },
-    logger: false, // Too noisy
+    logger: false,
   });
 
   try {
     await client.connect();
-    
-    // Select inbox and open it read-only so we don't accidentally mark emails as SEEN
+
     const lock = await client.getMailboxLock('INBOX');
     try {
-      // Find emails received since last poll, or UNSEEN
-      // To avoid processing thousands of old emails on first sync, we limit to unseen emails
-      // and optionally a SINCE date.
-      
-      const sinceDate = connection.last_imap_poll_at || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // 30 days ago max
+      const sinceDate = connection.last_imap_poll_at || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
-      // Search for emails
-      const searchCriteria = {
-        unseen: true,
-        since: sinceDate,
-      };
-
-      // Fetch envelope headers: In-Reply-To, References, Message-ID, Subject, From
-      const fetchGenerator = client.fetch(searchCriteria, { envelope: true, uid: true });
+      const fetchGenerator = client.fetch(
+        { seen: false, since: sinceDate },
+        { envelope: true, uid: true }
+      );
 
       let parsedCount = 0;
       let matchedCount = 0;
 
       for await (const msg of fetchGenerator) {
         parsedCount++;
-        
+
         const inReplyTo = msg.envelope?.inReplyTo;
         const messageId = msg.envelope?.messageId;
-        
+
         if (!inReplyTo) continue;
 
-        // Clean up In-Reply-To (often wrapped in <>)
         const cleanInReplyTo = inReplyTo.replace(/[<>]/g, '');
 
-        // Match against our SendingLog
         const sendingLog = await SendingLog.findOne({
           email_connection_id: connection._id,
-          message_id: { $regex: new RegExp(cleanInReplyTo, 'i') }, // Match partial/exact
+          message_id: { $regex: new RegExp(cleanInReplyTo, 'i') },
         });
 
         if (sendingLog) {
-          // It's a reply!
           matchedCount++;
-          
-          // Check if we already logged this exact reply (deduplication)
+
           const existingReply = await ReplyLog.exists({
             sending_log_id: sendingLog._id,
             message_id: messageId,
           });
 
           if (!existingReply) {
-            // Log it
             const fromAddress = msg.envelope?.from?.[0]?.address || 'unknown';
             const fromName    = msg.envelope?.from?.[0]?.name || '';
 
@@ -174,35 +166,34 @@ async function processImapPoll(job: Job): Promise<void> {
               message_id:          messageId,
               in_reply_to:         inReplyTo,
               replied_to_step_index: sendingLog.step_index,
-              classification:      ReplyClassification.UNKNOWN, // Ready for future AI parsing
+              classification:      ReplyClassification.UNKNOWN,
               imap_uid:            msg.uid,
               received_at:         msg.envelope?.date || new Date(),
             });
 
-            // Mark SequenceContact as replied
             await SequenceContact.updateOne(
               { _id: sendingLog.sequence_contact_id },
-              { 
+              {
                 status: ContactEnrollmentStatus.REPLIED,
                 has_replied: true,
-                next_send_at: null, // Halts further emails
+                next_send_at: null,
               }
             );
 
-            // Update stats
             await Sequence.updateOne(
               { _id: sendingLog.sequence_id },
               { $inc: { 'stats.replies': 1 } }
             );
 
-            logger.info(`Recorded reply for contact ${sendingLog.to_email}`, { sequenceContactId: sendingLog.sequence_contact_id });
+            logger.info(`Recorded reply for contact ${sendingLog.to_email}`, {
+              sequenceContactId: sendingLog.sequence_contact_id,
+            });
           }
         }
       }
 
       logger.debug(`IMAP poll complete for ${connection.label}: Scanned ${parsedCount}, Matched ${matchedCount}`);
-      
-      // Update the last poll timestamp
+
       connection.last_imap_poll_at = new Date();
       await connection.save();
 
@@ -211,7 +202,6 @@ async function processImapPoll(job: Job): Promise<void> {
     }
   } catch (err) {
     logger.error(`IMAP connection error for ${connection.label}:`, { error: (err as Error).message });
-    // Do not crash the worker. BullMQ will try again later if it fails or just on the next scheduler tick.
   } finally {
     try {
       await client.logout();
@@ -225,28 +215,46 @@ async function processImapPoll(job: Job): Promise<void> {
 
 export function startImapPoller() {
   try {
-    const conn = makeConnection();
+    // CRITICAL FIX: Each BullMQ instance gets its OWN dedicated connection.
+    // Previously all 4 instances shared one conn object, causing silent poll failures.
+    const imapSchedulerQueueConn = makeConnection('imap-scheduler-queue');
+    const imapPollQueueConn      = makeConnection('imap-poll-queue');
+    const imapSchedulerWorkerConn= makeConnection('imap-scheduler-worker');
+    const imapPollWorkerConn     = makeConnection('imap-poll-worker');
 
-    imapSchedulerQueue = new Queue(IMAP_SCHEDULER_QUEUE, { connection: conn });
-    imapPollQueue      = new Queue(IMAP_POLL_QUEUE, { connection: conn });
+    imapSchedulerQueue = new Queue(IMAP_SCHEDULER_QUEUE, { connection: imapSchedulerQueueConn });
+    imapPollQueue      = new Queue(IMAP_POLL_QUEUE,      { connection: imapPollQueueConn });
 
     schedulerWorker = new Worker(IMAP_SCHEDULER_QUEUE, runImapScheduler, {
-      connection: conn,
+      connection: imapSchedulerWorkerConn,
       concurrency: 1,
     });
 
     pollWorker = new Worker(IMAP_POLL_QUEUE, processImapPoll, {
-      connection: conn,
+      connection: imapPollWorkerConn,
       concurrency: parseInt(env.QUEUE_CONCURRENCY || '5', 10),
-      limiter: { max: 5, duration: 1000 }, // Prevent IMAP server connection spamming
+      limiter: { max: 5, duration: 1000 },
     });
 
-    // Error handlers
+    // Lifecycle listeners
+    schedulerWorker.on('ready', () => {
+      logger.info('✅ [IMAP-SCHEDULER] Worker READY', { queueName: IMAP_SCHEDULER_QUEUE });
+    });
     schedulerWorker.on('error', (err) => {
-      if (!isDev) logger.error('IMAP Scheduler worker error', { error: err.message });
+      logger.error('[IMAP-SCHEDULER] Worker error', { error: err.message });
+    });
+    schedulerWorker.on('failed', (job, err) => {
+      logger.error('[IMAP-SCHEDULER] Job failed', { jobId: job?.id, error: err.message });
+    });
+
+    pollWorker.on('ready', () => {
+      logger.info('✅ [IMAP-POLL] Worker READY', { queueName: IMAP_POLL_QUEUE });
     });
     pollWorker.on('error', (err) => {
-      if (!isDev) logger.error('IMAP Poll worker error', { error: err.message });
+      logger.error('[IMAP-POLL] Worker error', { error: err.message });
+    });
+    pollWorker.on('failed', (job, err) => {
+      logger.error('[IMAP-POLL] Job failed', { jobId: job?.id, error: err.message });
     });
 
     // Register repeatable job
@@ -262,13 +270,13 @@ export function startImapPoller() {
     ).then(() => {
       logger.info(`⏱  IMAP Scheduler registered — tick every ${IMAP_POLL_INTERVAL} min`);
     }).catch((err) => {
-      if (!isDev) logger.error('Failed to register IMAP scheduler', { error: err.message });
+      logger.error('Failed to register IMAP scheduler', { error: err.message });
     });
 
     logger.info('✅ IMAP Poller workers started');
 
   } catch (err) {
-    if (isDev) {
+    if (env.NODE_ENV === 'development') {
       logger.warn(`⚠️  IMAP Poller could not start (Redis unavailable): ${(err as Error).message}`);
     } else {
       throw err;
@@ -277,9 +285,12 @@ export function startImapPoller() {
 }
 
 export async function stopImapPoller(): Promise<void> {
+  // Close Workers before Queues (workers may still be processing)
   await Promise.allSettled([
     schedulerWorker?.close(),
     pollWorker?.close(),
+  ]);
+  await Promise.allSettled([
     imapSchedulerQueue?.close(),
     imapPollQueue?.close(),
   ]);

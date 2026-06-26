@@ -15,6 +15,7 @@ import {
   getSequenceStats,
   preActivationCheck,
   getSequenceIntegrity,
+  previewSchedule,
 } from '../controllers/sequence.controller';
 import {
   enrollContacts,
@@ -63,6 +64,15 @@ router.get(
   '/',
   validate(ListSequenceQuerySchema, 'query'),
   listSequences
+);
+
+/**
+ * POST /api/sequences/schedule-preview
+ * Calculate the exact scheduling slot using the backend's authoritative engine
+ */
+router.post(
+  '/schedule-preview',
+  previewSchedule
 );
 
 /**

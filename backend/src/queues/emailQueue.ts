@@ -66,8 +66,11 @@ export function recordSuccessfulEmailSend(to: string, sequenceId: string) {
   workerHealth.lastSuccessfulSequenceId  = sequenceId;
 }
 
-// ─── BullMQ connection (uses its own bundled ioredis) ─────────────
-function makeBullConnection(): ConnectionOptions {
+// ─── Connection factory ────────────────────────────────────────────
+// CRITICAL: Every BullMQ instance (Queue, Worker, QueueEvents) MUST
+// receive its own independent connection object. Sharing causes the
+// Worker's blocking-poll client to collide and silently stop consuming.
+function makeConnection(label: string): ConnectionOptions {
   const url = new URL(BULL_REDIS_URL);
   return {
     host: url.hostname,
@@ -77,15 +80,21 @@ function makeBullConnection(): ConnectionOptions {
     ...(BULL_REDIS_TLS ? { tls: {} } : {}),
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
-    retryStrategy: isDev ? () => null : undefined,
+    retryStrategy: (times: number) => {
+      if (times > 5) {
+        logger.warn(`[EMAIL-CONN:${label}] Redis retry #${times} — giving up`);
+        return null;
+      }
+      const delay = Math.min(times * 500, 2_000);
+      logger.warn(`[EMAIL-CONN:${label}] Redis retry #${times}, reconnecting in ${delay}ms`);
+      return delay;
+    },
   };
 }
 
-const bullConnection = makeBullConnection();
-
 // ─── Queue instance ────────────────────────────────────────────────
 export const emailQueue = new Queue(QUEUE_NAME, {
-  connection: bullConnection,
+  connection: makeConnection('email-queue'),
   defaultJobOptions: {
     attempts: RETRY_ATTEMPTS,
     backoff: {
@@ -99,7 +108,7 @@ export const emailQueue = new Queue(QUEUE_NAME, {
 
 // ─── Queue Events ──────────────────────────────────────────────────
 export const emailQueueEvents = new QueueEvents(QUEUE_NAME, {
-  connection: makeBullConnection(),
+  connection: makeConnection('email-queueevents'),
 });
 
 emailQueueEvents.on('completed', ({ jobId }) => {
@@ -109,6 +118,44 @@ emailQueueEvents.on('completed', ({ jobId }) => {
 emailQueueEvents.on('failed', ({ jobId, failedReason }) => {
   logger.error('❌ Email job failed', { jobId, failedReason });
 });
+
+// ─── Enqueue Helper ───────────────────────────────────────────────
+export async function enqueueEmailJob(
+  contactId: string,
+  stepIndex: number,
+  nextSendAt: Date,
+  sequenceId: string,
+  tickSource: string = 'delay_engine'
+): Promise<void> {
+  const now = Date.now();
+  const nextSendAtTimestamp = nextSendAt.getTime();
+  const delayMs = Math.max(0, nextSendAtTimestamp - now);
+  
+  // Deterministic Job ID: email-{contactId}-step{stepIndex}-{nextSendAtTimestamp}
+  const jobId = `email-${contactId}-step${stepIndex}-${nextSendAtTimestamp}`;
+
+  await emailQueue.add(
+    'email:send',
+    {
+      sequenceContactId: contactId,
+      stepIndex,
+      tickSource,
+      sequenceId,
+    },
+    {
+      jobId, // BullMQ will reject duplicate adds automatically
+      delay: delayMs,
+    }
+  );
+
+  logger.info('🕒 Enqueued delayed email job', {
+    jobId,
+    contactId,
+    stepIndex,
+    delayMs,
+    scheduledFor: nextSendAt.toISOString(),
+  });
+}
 
 // ─── Email Send Processor ─────────────────────────────────────────
 // Exported so debug endpoints can invoke it directly without BullMQ.
@@ -129,19 +176,40 @@ export async function processEmailSend(job: Job): Promise<void> {
     stepId: stepIndex, // Using index as step reference for now
   });
 
-  // 1. Re-fetch contact (idempotency check)
-  const contact = await SequenceContact.findById(sequenceContactId);
+  // 1. Re-fetch contact (idempotency check) and apply lock
+  const contact = await SequenceContact.findOneAndUpdate(
+    { _id: sequenceContactId, sending_locked: false },
+    { 
+      $set: { 
+        sending_locked: true, 
+        current_job_id: job.id, 
+        job_state: 'processing', 
+        last_attempt_at: new Date() 
+      } 
+    },
+    { new: true }
+  );
 
   if (!contact) {
-    logger.warn('Email worker: contact not found — marking UnrecoverableError', { sequenceContactId });
-    throw new UnrecoverableError(`Contact ${sequenceContactId} not found — skipping`);
+    const existing = await SequenceContact.findById(sequenceContactId);
+    if (!existing) {
+      logger.warn('Email worker: contact not found — marking UnrecoverableError', { sequenceContactId });
+      throw new UnrecoverableError(`Contact ${sequenceContactId} not found — skipping`);
+    } else if (existing.sending_locked) {
+      logger.warn('Email worker: contact is currently locked by another process — throwing transient error to retry', { sequenceContactId });
+      throw new Error(`Contact ${sequenceContactId} is currently locked by another process`);
+    }
+    return;
   }
-  logger.info('Email worker: contact loaded', {
+
+  logger.info('Email worker: contact loaded and locked', {
     contactId: contact._id,
     email: contact.contact_email,
     status: contact.status,
     current_step_index: contact.current_step_index,
   });
+
+  try {
 
   if (contact.status !== ContactEnrollmentStatus.ACTIVE) {
     logger.info(`Email worker: skipping — contact status is "${contact.status}"`, {
@@ -531,6 +599,11 @@ export async function processEmailSend(job: Job): Promise<void> {
     sequence.launch_date
   );
 
+  // Enqueue next step if active
+  if (contact.status === ContactEnrollmentStatus.ACTIVE && contact.next_send_at) {
+    await enqueueEmailJob(contact._id.toString(), contact.current_step_index, contact.next_send_at, contact.sequence_id.toString());
+  }
+
   logger.info('Email sent successfully', {
     to:         contact.contact_email,
     subject:    rendered.subject,
@@ -539,6 +612,14 @@ export async function processEmailSend(job: Job): Promise<void> {
     contactId:  contact._id,
     sequenceId: contact.sequence_id,
   });
+
+  } finally {
+    // Release the idempotency lock
+    await SequenceContact.updateOne(
+      { _id: sequenceContactId }, 
+      { $set: { sending_locked: false, job_state: 'completed' } }
+    );
+  }
 }
 
 // ─── Worker ───────────────────────────────────────────────────────
@@ -549,7 +630,7 @@ export function startEmailWorker(): Worker | null {
 
   try {
     worker = new Worker(QUEUE_NAME, processEmailSend, {
-      connection: makeBullConnection(),
+      connection: makeConnection('email-worker'),
       concurrency: CONCURRENCY,
       lockDuration: 120_000, // 2 min per send
       limiter:      { max: 10, duration: 1000 }, // max 10 sends/sec globally

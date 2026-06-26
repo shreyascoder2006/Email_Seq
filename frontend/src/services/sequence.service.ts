@@ -98,6 +98,21 @@ export const sequenceService = {
     return response.data.data || response.data;
   },
 
+  // Get schedule preview
+  getSchedulePreview: async (data: {
+    timezone: string;
+    launch_date: string;
+    active_days: number[];
+    start_hour: number;
+    start_minute: number;
+    end_hour: number;
+    end_minute: number;
+    daily_cap: number;
+  }, signal?: AbortSignal) => {
+    const response = await api.post('/sequences/schedule-preview', data, { signal });
+    return response.data.data || response.data;
+  },
+
   // Activate sequence (transition to active)
   activate: async (id: string): Promise<Sequence> => {
     const response = await api.patch(`/sequences/${id}/status`, { status: 'active' });

@@ -3,12 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { ArrowLeft, X, Edit2, Zap, Calendar as CalendarIcon, Clock, Info, Trash2 } from 'lucide-react';
+import { ArrowLeft, X, Edit2, Zap, Calendar as CalendarIcon, Clock, Info, Trash2, Globe } from 'lucide-react';
 import { toast, Toaster } from 'react-hot-toast';
 import { Button } from '../components/ui/Button';
 import { sequenceService } from '../services/sequence.service';
-import { calculateNextValidSlot, getLocalParts, type SendingWindow } from '@email-sequencing/shared';
 import { useAuthStore } from '../store/useAuthStore';
+import { DateTime } from 'luxon';
 
 const DAYS = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 
@@ -73,6 +73,20 @@ export const CreateSequenceWizard: React.FC = () => {
 
   const [nextSlot, setNextSlot] = useState('');
 
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewData, setPreviewData] = useState<any>(null);
+
+  // Real-time ticking clock
+  const [currentLocalDt, setCurrentLocalDt] = useState(() => DateTime.now().setZone(timezone));
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCurrentLocalDt(DateTime.now().setZone(timezone));
+    }, 60000); // Update every minute
+    return () => clearInterval(interval);
+  }, [timezone]);
+
+  const localTimeStr = currentLocalDt.toFormat('h:mm a ZZZZ');
+
   // 30 minute options
   const timeOptions = Array.from({ length: 48 }).map((_, i) => {
     const hour = Math.floor(i / 2);
@@ -87,40 +101,47 @@ export const CreateSequenceWizard: React.FC = () => {
   });
 
   useEffect(() => {
-    const [sH, sM] = startTimeStr.split(':').map(Number);
-    const [eH, eM] = endTimeStr.split(':').map(Number);
-    
-    const window: SendingWindow = {
-      timezone,
-      schedule: 'custom',
-      custom_days: customDays,
-      start_hour: sH,
-      start_minute: sM,
-      end_hour: eH,
-      end_minute: eM
+    const fetchPreview = async () => {
+      setPreviewLoading(true);
+      try {
+        const [sH, sM] = startTimeStr.split(':').map(Number);
+        const [eH, eM] = endTimeStr.split(':').map(Number);
+        const actualLaunchDate = sendingPreference === 'immediate' 
+          ? new Date().toISOString() 
+          : new Date(launchDate).toISOString();
+
+        const data = await sequenceService.getSchedulePreview({
+          timezone,
+          launch_date: actualLaunchDate,
+          active_days: customDays,
+          start_hour: sH,
+          start_minute: sM,
+          end_hour: eH,
+          end_minute: eM,
+          daily_cap: 200
+        });
+        
+        setPreviewData(data);
+        const dt = DateTime.fromISO(data.nextAvailableSlotLocal);
+        const dateStr = dt.toISODate() === DateTime.now().setZone(timezone).toISODate() 
+          ? 'Today' 
+          : dt.toFormat('EEE, MMM d, yyyy');
+          
+        const endH = eH === 0 ? 12 : eH > 12 ? eH - 12 : eH;
+        const endAmpm = eH < 12 ? 'AM' : 'PM';
+        const endMStr = eM.toString().padStart(2, '0');
+
+        setNextSlot(`${dateStr} • ${dt.toFormat('h:mm a')} – ${endH}:${endMStr} ${endAmpm} ${data.timezoneAbbreviation}`);
+      } catch (err) {
+        setNextSlot('');
+      } finally {
+        setPreviewLoading(false);
+      }
     };
 
-    const nextDate = calculateNextValidSlot(new Date(), window);
-    
-    // Format display string
-    const parts = getLocalParts(nextDate, timezone);
-    const h = parts.hour === 0 ? 12 : parts.hour > 12 ? parts.hour - 12 : parts.hour;
-    const ampm = parts.hour < 12 ? 'AM' : 'PM';
-    const mStr = parts.minute.toString().padStart(2, '0');
-    
-    // Very simple "is it today?" heuristic using the calculated date vs now in the target timezone
-    const nowParts = getLocalParts(new Date(), timezone);
-    const isToday = (parts.year === nowParts.year && parts.month === nowParts.month && parts.day === nowParts.day);
-    
-    const dateStr = isToday ? 'Today' : nextDate.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
-    
-    // Also format end time
-    const endH = eH === 0 ? 12 : eH > 12 ? eH - 12 : eH;
-    const endAmpm = eH < 12 ? 'AM' : 'PM';
-    const endMStr = eM.toString().padStart(2, '0');
-
-    setNextSlot(`${dateStr} • ${h}:${mStr} ${ampm} – ${endH}:${endMStr} ${endAmpm} ${timezone}`);
-  }, [customDays, launchDate, timezone, startTimeStr, endTimeStr]);
+    const timer = setTimeout(fetchPreview, 500);
+    return () => clearTimeout(timer);
+  }, [customDays, launchDate, timezone, startTimeStr, endTimeStr, sendingPreference]);
 
   const onSubmit = async (data: WizardData) => {
     setIsSubmitting(true);
@@ -359,30 +380,31 @@ export const CreateSequenceWizard: React.FC = () => {
               </div>
 
               <div className="space-y-2">
-                <label className="block text-sm font-bold text-gray-900">Timezone</label>
-                <div className="relative">
-                  <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
+                <label className="block text-sm font-bold text-gray-900">Your Timezone</label>
+                
+                {/* Detected Timezone Card */}
+                <div className="flex items-center justify-between px-4 py-2.5 bg-white border border-gray-200 rounded-xl mb-2 shadow-sm">
+                  <div className="flex flex-col">
+                    <span className="text-sm font-bold text-gray-900">{timezone.replace('_', ' ')}</span>
+                    <span className="text-[11px] text-gray-500 font-medium">Automatically detected from your browser.</span>
                   </div>
-                  <select 
-                    {...register('timezone')} 
-                    className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 focus:ring-2 focus:ring-primary-500 focus:border-primary-500 rounded-xl shadow-sm text-gray-900 text-sm appearance-none"
-                  >
-                    <option value="UTC">UTC</option>
-                    <option value="America/New_York">Eastern Time (ET)</option>
-                    <option value="America/Chicago">Central Time (CT)</option>
-                    <option value="America/Denver">Mountain Time (MT)</option>
-                    <option value="America/Los_Angeles">Pacific Time (PT)</option>
-                    <option value="Asia/Kolkata">India Standard Time (IST)</option>
-                  </select>
-                  <div className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                    </svg>
+                  <div className="p-2 bg-indigo-50 rounded-lg shrink-0">
+                    <Globe className="w-5 h-5 text-indigo-600" />
                   </div>
                 </div>
+                
+                {/* Local Time Card */}
+                <div className="flex items-center justify-between px-4 py-2.5 bg-indigo-50/50 border border-indigo-100 rounded-xl shadow-sm">
+                  <div className="flex flex-col">
+                    <span className="text-[11px] font-bold text-indigo-900 uppercase tracking-wider mb-0.5">Current Local Time</span>
+                    <span className="text-xs text-indigo-700">Automatically adjusts for DST</span>
+                  </div>
+                  <div className="flex flex-col items-end">
+                    <span className="text-sm font-black text-indigo-900 tracking-tight">{localTimeStr}</span>
+                  </div>
+                </div>
+                {/* Hidden input to ensure timezone is in form values if not already handled by default values */}
+                <input type="hidden" {...register('timezone')} />
               </div>
 
               <div className="space-y-2">
