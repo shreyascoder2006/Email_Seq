@@ -56,6 +56,12 @@ export interface ISequenceContact extends Document {
   current_job_id?: string;
   job_state?: string;
   last_attempt_at?: Date;
+  job_scheduled_at?: Date;
+  
+  // Rescheduling support
+  schedule_version: number;
+  last_rescheduled_at?: Date;
+  last_rescheduled_by?: Types.ObjectId;
 
   // Step tracking
   current_step_index: number;     // next step to execute
@@ -68,8 +74,11 @@ export interface ISequenceContact extends Document {
   has_replied: boolean;
 
   // Unsubscribe
-  unsubscribed_at?:    Date;
-  unsubscribe_source?: UnsubscribeSource;
+  unsubscribed_at?:      Date;
+  unsubscribe_source?:   UnsubscribeSource;
+  unsubscribe_reason?:   string; // optional free-text reason
+  unsubscribe_ip?:       string; // IP address of the unsubscribe request
+  unsubscribe_user_agent?: string; // UA of the unsubscribe request
 
   // Enrollment metadata
   enrolled_at:  Date;
@@ -157,6 +166,12 @@ const SequenceContactSchema = new Schema<ISequenceContact>(
     current_job_id:  { type: String, trim: true },
     job_state:       { type: String, trim: true },
     last_attempt_at: { type: Date },
+    job_scheduled_at: { type: Date },
+
+    // Rescheduling Support
+    schedule_version: { type: Number, default: 1 },
+    last_rescheduled_at: { type: Date },
+    last_rescheduled_by: { type: Schema.Types.ObjectId, ref: 'User' },
 
     // Step state
     current_step_index:  { type: Number, default: 0, min: 0 },
@@ -169,8 +184,11 @@ const SequenceContactSchema = new Schema<ISequenceContact>(
     has_replied: { type: Boolean, default: false },
 
     // Unsubscribe
-    unsubscribed_at:    { type: Date },
-    unsubscribe_source: { type: String, enum: Object.values(UnsubscribeSource) },
+    unsubscribed_at:      { type: Date },
+    unsubscribe_source:   { type: String, enum: Object.values(UnsubscribeSource) },
+    unsubscribe_reason:   { type: String, trim: true, maxlength: 500 },
+    unsubscribe_ip:       { type: String, trim: true, maxlength: 100 },
+    unsubscribe_user_agent: { type: String, trim: true, maxlength: 500 },
 
     // Timestamps
     enrolled_at:  { type: Date, default: Date.now },

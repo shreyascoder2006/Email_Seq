@@ -72,22 +72,23 @@ export const SequenceMetricsTable: React.FC<SequenceMetricsTableProps> = ({
 
           {/* Column widths — total ≈ 1200px (fits 1440px screen minus 192px sidebar minus padding) */}
           <colgroup>
-            <col style={{ width: '36px'  }} />  {/* checkbox */}
-            <col style={{ width: '200px' }} />  {/* sequence name */}
-            <col style={{ width: '84px'  }} />  {/* campaign state */}
-            <col style={{ width: '54px'  }} />  {/* active */}
-            <col style={{ width: '54px'  }} />  {/* paused */}
-            <col style={{ width: '88px'  }} />  {/* completed */}
-            <col style={{ width: '48px'  }} />  {/* sent */}
-            <col style={{ width: '100px' }} />  {/* schedule */}
-            <col style={{ width: '60px'  }} />  {/* read */}
-            <col style={{ width: '80px'  }} />  {/* clicked */}
-            <col style={{ width: '70px'  }} />  {/* replied */}
-            <col style={{ width: '80px'  }} />  {/* hard bounce */}
-            <col style={{ width: '80px'  }} />  {/* soft bounce */}
-            <col style={{ width: '70px'  }} />  {/* analytics */}
-            <col style={{ width: '64px'  }} />  {/* actions */}
+            <col style={{ width: '36px'  }} />
+            <col style={{ width: '200px' }} />
+            <col style={{ width: '84px'  }} />
+            <col style={{ width: '54px'  }} />
+            <col style={{ width: '54px'  }} />
+            <col style={{ width: '88px'  }} />
+            <col style={{ width: '48px'  }} />
+            <col style={{ width: '100px' }} />
+            <col style={{ width: '60px'  }} />
+            <col style={{ width: '80px'  }} />
+            <col style={{ width: '70px'  }} />
+            <col style={{ width: '80px'  }} />
+            <col style={{ width: '80px'  }} />
+            <col style={{ width: '70px'  }} />
+            <col style={{ width: '64px'  }} />
           </colgroup>
+
 
           {/* ── Header ────────────────────────────────────────────────────── */}
           <thead>

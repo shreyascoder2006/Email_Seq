@@ -51,3 +51,20 @@ export const emailRateLimiter = rateLimit({
     res.status(429).json(response);
   },
 });
+
+// ─── Unsubscribe endpoint limiter ─────────────────────────────────
+// Keyed by token to prevent per-token DoS; very permissive for legit use.
+export const unsubscribeRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => (req.params?.token ?? req.ip) as string,
+  message: (_req: Request, res: Response) => {
+    const response: ApiResponse = {
+      success: false,
+      message: 'Too many unsubscribe requests — please try again later',
+    };
+    res.status(429).json(response);
+  },
+});

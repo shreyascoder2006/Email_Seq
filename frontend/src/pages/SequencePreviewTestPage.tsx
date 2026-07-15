@@ -310,9 +310,10 @@ function LaunchModal({
   connections: EmailConnection[];
   integrity: SequenceIntegrity | null;
   onClose: () => void;
-  onLaunch: () => void;
+  onLaunch: (sendImmediately: boolean) => void;
   launching: boolean;
 }) {
+  const [sendImmediately, setSendImmediately] = useState(false);
   const activeEmailSteps = steps.filter(s => s.type === 'email' && s.is_active);
   const uniqueConnections = new Set();
   activeEmailSteps.forEach(s => {
@@ -533,11 +534,21 @@ function LaunchModal({
           </button>
           
           <div className="flex items-center gap-4">
-            {!allChecksPassed && (
+            {!allChecksPassed ? (
               <span className="text-[13px] font-bold text-red-600">Please resolve required checks to launch.</span>
+            ) : (
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-600"
+                  checked={sendImmediately}
+                  onChange={(e) => setSendImmediately(e.target.checked)}
+                />
+                <span className="text-sm font-semibold text-gray-700">Send first email immediately</span>
+              </label>
             )}
             <button
-              onClick={onLaunch}
+              onClick={() => onLaunch(sendImmediately)}
               disabled={launching || !allChecksPassed}
               className="flex items-center gap-2 px-8 py-3 rounded-lg bg-[#533EEC] text-white text-[14px] font-bold hover:bg-indigo-700 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
@@ -605,11 +616,11 @@ export function SequencePreviewTestPage() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  const handleLaunch = async () => {
+  const handleLaunch = async (sendImmediately = false) => {
     if (!sequence) return;
     setLaunching(true);
     try {
-      await sequenceService.activate(sequence._id);
+      await sequenceService.activate(sequence._id, sendImmediately);
       toast.success('Campaign launched successfully!');
       setShowLaunchModal(false);
       navigate('/sequences');
@@ -641,6 +652,9 @@ export function SequencePreviewTestPage() {
 
   const handleToggleStatus = async (isActive: boolean) => {
     if (!sequence) return;
+    // Guard: skip no-op transitions to avoid state machine errors
+    if (isActive && sequence.status === 'active') return;
+    if (!isActive && sequence.status === 'paused') return;
     try {
       if (isActive) {
         const updated = await sequenceService.activate(sequence._id);

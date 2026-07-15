@@ -87,6 +87,8 @@ const BounceLogSchema = new Schema<IBounceLog>(
 // ─── Indexes ───────────────────────────────────────────────────────
 // Unhandled bounces queue (worker processes these)
 BounceLogSchema.index({ user_id: 1, is_handled: 1, bounced_at: 1 });
+// Guarantee idempotency: one sending log can only bounce once
+BounceLogSchema.index({ sending_log_id: 1 }, { unique: true });
 // Deliverability: hard bounces per connection (monitor sender reputation)
 BounceLogSchema.index({ email_connection_id: 1, bounce_type: 1, bounced_at: -1 });
 // Contact-level bounce lookup

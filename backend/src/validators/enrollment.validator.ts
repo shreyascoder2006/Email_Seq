@@ -99,8 +99,13 @@ export const PatchContactStatusSchema = z.object({
 export const BulkContactActionSchema = z.object({
   contactIds: z
     .array(objectIdField)
-    .min(1, 'At least one contact ID is required')
-    .max(1000, 'Maximum 1000 contacts per batch'),
+    .max(1000, 'Maximum 1000 contacts per batch')
+    .optional()
+    .describe('IDs to act on. If omitted, action applies to filter_status matches.'),
+  filter_status: z
+    .string()
+    .optional()
+    .describe('Apply action to all contacts with this status (used when contactIds is omitted)'),
 });
 
 // ─── Inferred types ────────────────────────────────────────────────

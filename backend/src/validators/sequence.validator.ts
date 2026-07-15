@@ -156,6 +156,10 @@ export const TransitionStatusSchema = z.object({
       invalid_type_error: `Status must be one of: active, paused, archived, completed`,
     }
   ),
+  // Activation-time only: bypasses sending-window math so all active contacts
+  // become due immediately. Has no effect for non-active transitions.
+  // Must NOT be persisted — this is a one-shot request parameter.
+  send_immediately: z.boolean().optional().default(false),
 });
 
 // ─── List Query ────────────────────────────────────────────────────

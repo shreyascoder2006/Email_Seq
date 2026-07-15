@@ -1,0 +1,86 @@
+name: Performance & Concurrency Tests
+
+on:
+  schedule:
+    - cron: '0 2 * * *' # Run nightly at 2 AM
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Tests to run (all, k6, chaos)'
+        required: true
+        default: 'all'
+
+jobs:
+  performance-tests:
+    runs-on: ubuntu-latest
+
+    services:
+      mongodb:
+        image: mongo:6.0
+        ports:
+          - 27017:27017
+      redis:
+        image: redis:7.0-alpine
+        ports:
+          - 6379:6379
+
+    env:
+      MONGO_URI: mongodb://localhost:27017/email_sequencing_test
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      PORT: 5000
+      JWT_SECRET: testing_secret_key_12345
+      ENCRYPTION_KEY: 12345678901234567890123456789012
+      QUEUE_CONCURRENCY: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./backend
+        run: npm ci
+
+      - name: Setup k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Start backend server
+        working-directory: ./backend
+        run: |
+          npm run build
+          npm run start &
+          # Wait for backend to be ready
+          npx wait-on http://localhost:5000/api/health/ping -t 30000
+
+      - name: Setup Test Data
+        run: |
+          # Seed user and a default sequence via an admin script or curl
+          node tests/scripts/seed_test_data.js > seed_output.json
+          echo "SEQUENCE_ID=$(jq -r .sequenceId seed_output.json)" >> $GITHUB_ENV
+          echo "CONNECTION_ID=$(jq -r .connectionId seed_output.json)" >> $GITHUB_ENV
+          echo "USER_EMAIL=$(jq -r .email seed_output.json)" >> $GITHUB_ENV
+          echo "USER_PASS=$(jq -r .password seed_output.json)" >> $GITHUB_ENV
+
+      - name: Run Master Test Script
+        shell: pwsh
+        run: |
+          ./tests/scripts/run_all_tests.ps1 `
+            -BaseUrl "http://localhost:5000" `
+            -User1Email "${{ env.USER_EMAIL }}" `
+            -User1Pass "${{ env.USER_PASS }}" `
+            -SequenceId "${{ env.SEQUENCE_ID }}" `
+            -ConnectionId "${{ env.CONNECTION_ID }}"
+
+      - name: Upload Test Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-reports
+          path: tests/reports/

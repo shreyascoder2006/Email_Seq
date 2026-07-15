@@ -95,6 +95,9 @@ export function SequenceRecipientsStep() {
 
   const handleToggleStatus = async (isActive: boolean) => {
     if (!sequence) return;
+    // Guard: skip no-op transitions to avoid state machine errors
+    if (isActive && sequence.status === 'active') return;
+    if (!isActive && sequence.status === 'paused') return;
     try {
       if (isActive) {
         const updated = await sequenceService.activate(sequence._id);

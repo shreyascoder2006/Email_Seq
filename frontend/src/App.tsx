@@ -15,6 +15,7 @@ import { ImportLists } from './pages/ImportLists';
 import { SequenceRecipientsStep } from './pages/SequenceRecipientsStep';
 import { SequenceRecipientsManager } from './pages/SequenceRecipientsManager';
 import { SequencePreviewTestPage } from './pages/SequencePreviewTestPage';
+import { SequenceAnalytics } from './pages/SequenceAnalytics';
 
 function LegacyBuilderRedirect() {
   const { id } = useParams();
@@ -41,6 +42,7 @@ function App() {
             <Route path="/templates" element={<Templates />} />
             <Route path="/email-accounts" element={<EmailAccounts />} />
             <Route path="/analytics" element={<Analytics />} />
+            <Route path="/sequences/:id/analytics" element={<SequenceAnalytics />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/import-lists" element={<ImportLists />} />
             

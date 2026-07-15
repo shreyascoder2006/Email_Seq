@@ -16,6 +16,7 @@ import {
   preActivationCheck,
   getSequenceIntegrity,
   previewSchedule,
+  rescheduleCampaign,
 } from '../controllers/sequence.controller';
 import {
   enrollContacts,
@@ -25,6 +26,9 @@ import {
   bulkPauseContacts,
   bulkResumeContacts,
   bulkSkipContacts,
+  bulkRemoveContacts,
+  bulkReenrollContacts,
+  exportContacts,
 } from '../controllers/enrollment.controller';
 import { authenticate }  from '../middleware/auth';
 import { validate }      from '../middleware/validate';
@@ -354,6 +358,38 @@ router.patch(
 );
 
 /**
+ * PATCH /api/sequences/:id/contacts/remove
+ * Soft-delete contacts (status → removed)
+ */
+router.patch(
+  '/:id/contacts/remove',
+  validate(IdParamSchema, 'params'),
+  validate(BulkContactActionSchema, 'body'),
+  bulkRemoveContacts
+);
+
+/**
+ * PATCH /api/sequences/:id/contacts/reenroll
+ * Re-enroll failed/bounced/completed contacts from step 0
+ */
+router.patch(
+  '/:id/contacts/reenroll',
+  validate(IdParamSchema, 'params'),
+  validate(BulkContactActionSchema, 'body'),
+  bulkReenrollContacts
+);
+
+/**
+ * GET /api/sequences/:id/contacts/export
+ * Download recipients as CSV (status filter optional)
+ */
+router.get(
+  '/:id/contacts/export',
+  validate(IdParamSchema, 'params'),
+  exportContacts
+);
+
+/**
  * PATCH /api/sequences/:id/contacts/:contactId
  * Pause or resume a contact's enrollment.
  */
@@ -362,6 +398,16 @@ router.patch(
   validate(ContactParamSchema, 'params'),
   validate(PatchContactStatusSchema, 'body'),
   patchEnrolledContact
+);
+
+/**
+ * POST /api/sequences/:id/reschedule
+ * Reschedule bulk contacts in a campaign.
+ */
+router.post(
+  '/:id/reschedule',
+  validate(IdParamSchema, 'params'),
+  rescheduleCampaign
 );
 
 export default router;

@@ -44,6 +44,7 @@ export interface TrackingContext {
   messageId:         string;
   trackOpens:        boolean;
   trackClicks:       boolean;
+  unsubscribeUrl:    string; // RFC 2369 / RFC 8058 — injected into footer + headers
 }
 
 // ─── Core renderer ─────────────────────────────────────────────────
@@ -101,6 +102,32 @@ export function injectTrackingPixel(
 }
 
 /**
+ * Inject an unsubscribe footer into the HTML body and append a plain-text equivalent.
+ * The HTML footer is inserted before </body>; the text footer is appended.
+ * Both are required: HTML for rendered clients, text for CAN-SPAM compliance.
+ */
+export function injectUnsubscribeFooter(
+  bodyHtml: string,
+  bodyText: string,
+  unsubscribeUrl: string
+): { html: string; text: string } {
+  const htmlFooter = `
+<div style="margin-top:32px;padding-top:20px;border-top:1px solid #e5e7eb;text-align:center;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:12px;color:#6b7280;line-height:1.8;">
+  You are receiving this email because you opted in to our outreach.<br>
+  <a href="${unsubscribeUrl}" style="color:#6b7280;text-decoration:underline;">Unsubscribe</a> from this sequence.
+</div>`;
+
+  // Plain-text footer — required for CAN-SPAM compliance in text-only clients
+  const textFooter = `\n\n--\nTo unsubscribe from this sequence:\n${unsubscribeUrl}`;
+
+  const html = bodyHtml.includes('</body>')
+    ? bodyHtml.replace('</body>', `${htmlFooter}</body>`)
+    : bodyHtml + htmlFooter;
+
+  return { html, text: bodyText + textFooter };
+}
+
+/**
  * Wrap anchor <a href="..."> tags with click tracking redirect URLs.
  * Only wraps http/https links that aren't already tracking URLs.
  */
@@ -146,7 +173,7 @@ export function renderEmail(
   // Step 1: Merge tags
   const subject   = renderMergeTags(opts.subject,   ctx);
   let   body_html = renderMergeTags(opts.body_html,  ctx);
-  const body_text = renderMergeTags(opts.body_text ?? '', ctx);
+  let   body_text = renderMergeTags(opts.body_text ?? '', ctx);
 
   // Step 2: Tracking pixel
   body_html = injectTrackingPixel(body_html, tracking);
@@ -155,6 +182,11 @@ export function renderEmail(
 
   // Step 3: Click link wrapping
   body_html = wrapClickLinks(body_html, tracking, links);
+
+  // Step 4: Unsubscribe footer (HTML + plain-text)
+  const withFooter = injectUnsubscribeFooter(body_html, body_text, tracking.unsubscribeUrl);
+  body_html = withFooter.html;
+  body_text = withFooter.text;
 
   return { subject, body_html, body_text, links };
 }

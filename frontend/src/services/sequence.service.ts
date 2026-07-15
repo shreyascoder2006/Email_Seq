@@ -114,8 +114,26 @@ export const sequenceService = {
   },
 
   // Activate sequence (transition to active)
-  activate: async (id: string): Promise<Sequence> => {
-    const response = await api.patch(`/sequences/${id}/status`, { status: 'active' });
+  activate: async (id: string, sendImmediately = false): Promise<Sequence> => {
+    const response = await api.patch(`/sequences/${id}/status`, {
+      status: 'active',
+      ...(sendImmediately && { send_immediately: true })
+    });
+    return response.data.data || response.data;
+  },
+
+  // Reschedule Campaign
+  rescheduleCampaign: async (id: string, data: {
+    contact_ids: string[];
+    action: string;
+    browser_timezone: string;
+    launch_date?: string;
+    start_hour?: number;
+    start_minute?: number;
+    end_hour?: number;
+    end_minute?: number;
+  }) => {
+    const response = await api.post(`/sequences/${id}/reschedule`, data);
     return response.data.data || response.data;
   },
 };

@@ -27,6 +27,9 @@ const envSchema = z.object({
   JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('30d'),
 
+  // Unsubscribe token signing secret (optional — falls back to JWT_SECRET)
+  UNSUBSCRIBE_SECRET: z.string().min(32).optional(),
+
   // Encryption
   ENCRYPTION_KEY: z.string().length(32, 'ENCRYPTION_KEY must be exactly 32 characters'),
 
@@ -48,6 +51,7 @@ const envSchema = z.object({
   // Scheduler
   SCHEDULER_INTERVAL_MINUTES: z.string().default('5'),
   SCHEDULER_BATCH_SIZE: z.string().default('50'),
+  QUEUE_MAX_OFFLINE_MS: z.string().default('180000'), // 3 minutes
 
   // Rate Limiting
   RATE_LIMIT_WINDOW_MS: z.string().default('900000'),

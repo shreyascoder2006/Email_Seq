@@ -92,6 +92,8 @@ export interface Sequence {
     total_contacts: number;
     active_contacts: number;
     paused_contacts: number;
+    completed: number;
+    unsubscribed: number;
     total_sent: number;
     total_opens: number;
     total_clicks: number;
@@ -221,6 +223,7 @@ export interface SequenceContact {
   has_clicked: boolean;
   has_replied: boolean;
   enrolled_at: string;
+  unsubscribed_at?: string;
   last_error?: string;
   custom_variables?: Record<string, string>;
 }

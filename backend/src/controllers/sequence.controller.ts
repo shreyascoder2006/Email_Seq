@@ -1,5 +1,6 @@
 import { Response, NextFunction } from 'express';
 import { sequenceService } from '../services/sequence.service';
+import { analyticsService } from '../services/analytics.service';
 import { AuthenticatedRequest } from '../types';
 import {
   sendSuccess,
@@ -248,16 +249,13 @@ export async function getSequenceStats(
   next: NextFunction
 ): Promise<void> {
   try {
-    const seq = await Sequence.findOne({ _id: req.params.id, user_id: uid(req) })
-      .select('stats')
-      .lean();
-
-    if (!seq) {
-      throw AppError.notFound('Sequence');
-    }
-
-    sendSuccess(res, seq.stats || {}, 'Sequence stats retrieved');
-} catch (err) {
+    // Delegate entirely to analyticsService — single source of truth for metrics
+    const metrics = await analyticsService.getSequenceMetrics(
+      req.params.id,
+      uid(req)
+    );
+    sendSuccess(res, metrics, 'Sequence stats retrieved');
+  } catch (err) {
     next(err);
   }
 }
@@ -357,6 +355,48 @@ export async function previewSchedule(
       isLaunchAllowed
     }, 'Schedule preview computed');
 
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** POST /api/sequences/:id/reschedule */
+export async function rescheduleCampaign(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { contact_ids, action, launch_date, start_hour, start_minute, end_hour, end_minute, browser_timezone } = req.body;
+    
+    if (!contact_ids || !Array.isArray(contact_ids) || contact_ids.length === 0) {
+      throw new AppError('contact_ids array is required', 400);
+    }
+    if (!action || !['immediately', 'today', 'tomorrow', 'custom'].includes(action)) {
+      throw new AppError('valid action is required', 400);
+    }
+    if (!browser_timezone) {
+      throw new AppError('browser_timezone is required', 400);
+    }
+
+    const { enrollmentService } = await import('../services/enrollment.service');
+
+    const result = await enrollmentService.rescheduleContacts(
+      uid(req),
+      req.params.id,
+      contact_ids,
+      {
+        action,
+        launch_date,
+        start_hour,
+        start_minute,
+        end_hour,
+        end_minute,
+        browser_timezone
+      }
+    );
+
+    sendSuccess(res, result, 'Campaign rescheduled successfully');
   } catch (err) {
     next(err);
   }

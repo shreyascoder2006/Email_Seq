@@ -254,6 +254,58 @@ export class SequenceService {
     const seq        = await assertOwned(userId, sequenceId);
     const from       = seq.status;
     const to         = dto.status;
+
+    // Idempotent: if already in target state, handle gracefully
+    if (from === to) {
+      // For active→active re-launch: still schedule contacts and fire an immediate tick
+      // so that any contacts without next_send_at get picked up immediately.
+      if (to === SequenceStatus.ACTIVE) {
+        logger.info('[ACTIVATION] active→active re-launch: re-scheduling contacts and firing immediate tick', { sequenceId });
+        const isImmediate = dto.send_immediately === true;
+        const now = new Date();
+        const adjustedNextSendAt = isImmediate
+          ? new Date(Date.now() + 1000)
+          : calculateNextValidSlot(now, seq.sending_window as any, seq.launch_date);
+
+        const contactFilter = isImmediate
+          ? { sequence_id: sequenceId, status: 'active' as const }
+          : {
+              sequence_id: sequenceId,
+              status:      'active' as const,
+              $or: [
+                { next_send_at: { $lte: now } },
+                { next_send_at: null },
+              ],
+            };
+
+        const updated = await SequenceContact.updateMany(contactFilter, {
+          $set: { next_send_at: adjustedNextSendAt },
+        });
+        logger.info('[ACTIVATION] Re-scheduled contacts for active→active', {
+          sequenceId, matchedCount: updated.matchedCount, isImmediate,
+        });
+
+        const liveSchedulerQueue = getSchedulerQueue();
+        if (liveSchedulerQueue) {
+          try {
+            await liveSchedulerQueue.add(
+              'scheduler:tick:immediate',
+              { reason: 'sequence_relaunch', sequenceId: sequenceId.toString() },
+              { removeOnComplete: 5, removeOnFail: 5 }
+            );
+            logger.info('[ACTIVATION] Enqueued immediate tick for re-launched sequence', { sequenceId });
+          } catch (redisErr: any) {
+            logger.warn('[ACTIVATION] Could not enqueue immediate tick (Redis unavailable) — scheduler will pick up on next periodic tick', {
+              sequenceId, error: redisErr.message,
+            });
+          }
+        }
+      } else {
+        logger.info('Sequence transition skipped (already in target state)', { sequenceId, from, to });
+      }
+      return seq;
+    }
+
     const allowed    = ALLOWED_TRANSITIONS[from];
 
     if (!allowed.includes(to)) {
@@ -289,10 +341,55 @@ export class SequenceService {
 
     await seq.save();
 
-    // If activating, bump active contacts' next_send_at so scheduler picks them up
+    // If activating, set next_send_at on active contacts so the scheduler picks them up.
     if (to === SequenceStatus.ACTIVE && from !== SequenceStatus.ACTIVE) {
       const now = new Date();
-      const adjustedNextSendAt = calculateNextValidSlot(now, seq.sending_window as any, seq.launch_date);
+
+      // ── Activation-time scheduling branch ─────────────────────────────
+      //
+      // send_immediately = true (passed by caller, NOT persisted):
+      //   • next_send_at = now + 1 s  — bypasses window / weekday math entirely
+      //   • Filter: ALL active contacts — contacts enrolled outside a valid window
+      //     already have next_send_at = future slot (e.g. Saturday → Monday),
+      //     so the narrow $lte:now filter would match 0 contacts. We must update all.
+      //
+      // send_immediately = false (default):
+      //   • next_send_at = calculateNextValidSlot(now, window, launch_date)
+      //   • Filter: only contacts that are past-due or have no send time yet
+      //     (preserves the correct future next_send_at for newly enrolled contacts)
+      //
+      // After the first send fires, advanceContact() always uses calculateNextValidSlot
+      // for all subsequent steps — window restrictions are fully restored.
+      const isImmediate = dto.send_immediately === true;
+
+      const adjustedNextSendAt = isImmediate
+        ? new Date(Date.now() + 1000)
+        : calculateNextValidSlot(now, seq.sending_window as any, seq.launch_date);
+
+      // Scheduler verification:
+      //   runScheduler() queries: { status:'active', next_send_at:{ $lte: now }, sending_locked: false }
+      //   With isImmediate, adjustedNextSendAt = now+1s ≤ now within 1s → scheduler sweep catches it.
+      //   The immediate tick enqueued below ensures the sweep runs within seconds of activation.
+
+      logger.info('[ACTIVATION] Scheduling mode determined', {
+        sequenceId:          sequenceId.toString(),
+        isImmediate,
+        adjustedNextSendAt:  adjustedNextSendAt.toISOString(),
+        serverTimeUtc:       now.toISOString(),
+        contactBecomesImmediatelyDue: isImmediate,
+      });
+
+      // Select the correct filter based on mode (see explanation above)
+      const contactFilter = isImmediate
+        ? { sequence_id: sequenceId, status: 'active' as const }
+        : {
+            sequence_id: sequenceId,
+            status:      'active' as const,
+            $or: [
+              { next_send_at: { $lte: now } },
+              { next_send_at: null },
+            ],
+          };
       
       const allActiveContacts = await SequenceContact.find({
         sequence_id: sequenceId,
@@ -309,18 +406,9 @@ export class SequenceService {
         next_send_at: c.next_send_at ? c.next_send_at.toISOString() : null
       }));
 
-      // Update contacts that are either past due or null
-      await SequenceContact.updateMany(
-        { 
-          sequence_id: sequenceId, 
-          status: 'active',
-          $or: [
-            { next_send_at: { $lte: now } },
-            { next_send_at: null }
-          ]
-        },
-        { $set: { next_send_at: adjustedNextSendAt } }
-      );
+      await SequenceContact.updateMany(contactFilter, {
+        $set: { next_send_at: adjustedNextSendAt },
+      });
 
       const allActiveContactsAfter = await SequenceContact.find({
         sequence_id: sequenceId,
@@ -360,6 +448,7 @@ export class SequenceService {
 
       logger.info('SEQUENCE ACTIVATION LIFECYCLE - DIAGNOSTICS', {
         sequenceId: sequenceId.toString(),
+        isImmediate,
         previousStatus: from,
         newStatus: to,
         activationTimestamp: now.toISOString(),
@@ -374,12 +463,18 @@ export class SequenceService {
       // Enqueue immediate sequence-scoped tick so Launch Campaign sends without requiring restart
       const liveSchedulerQueue = getSchedulerQueue();
       if (liveSchedulerQueue) {
-        await liveSchedulerQueue.add(
-          'scheduler:tick:immediate', 
-          { reason: 'sequence_activation', sequenceId: sequenceId.toString() }, 
-          { removeOnComplete: 5, removeOnFail: 5 }
-        );
-        logger.info('SEQUENCE ACTIVATION: Enqueued immediate sequence-scoped scheduler tick', { sequenceId: sequenceId.toString() });
+        try {
+          await liveSchedulerQueue.add(
+            'scheduler:tick:immediate', 
+            { reason: 'sequence_activation', sequenceId: sequenceId.toString() }, 
+            { removeOnComplete: 5, removeOnFail: 5 }
+          );
+          logger.info('SEQUENCE ACTIVATION: Enqueued immediate sequence-scoped scheduler tick', { sequenceId: sequenceId.toString() });
+        } catch (redisErr: any) {
+          logger.warn('SEQUENCE ACTIVATION: Could not enqueue immediate tick (Redis unavailable) — scheduler will pick up on next periodic tick', {
+            sequenceId, error: redisErr.message,
+          });
+        }
       } else {
         logger.warn('SEQUENCE ACTIVATION: Scheduler queue not initialized — immediate tick skipped. Waiting for periodic tick.', { sequenceId: sequenceId.toString() });
       }
@@ -836,10 +931,11 @@ export class SequenceService {
               custom_variables: firstContact.custom_variables || {}
             }, {
               sequenceContactId: firstContact._id.toString(),
-              sendingLogId: 'dry-run',
-              messageId: 'dry-run',
-              trackOpens: false,
-              trackClicks: false
+              sendingLogId:      'dry-run',
+              messageId:         'dry-run',
+              trackOpens:        false,
+              trackClicks:       false,
+              unsubscribeUrl:    '#', // placeholder — not used in pre-activation check
             });
 
             // Check for unresolved square brackets [industry], etc.

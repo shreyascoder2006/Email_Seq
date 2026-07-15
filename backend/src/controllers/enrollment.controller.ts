@@ -144,3 +144,53 @@ export async function bulkSkipContacts(
     sendSuccess(res, result, `Successfully skipped ${result.skipped} contacts`);
   } catch (err) { next(err); }
 }
+
+// ─── PATCH /api/sequences/:id/contacts/remove ────────────────────
+export async function bulkRemoveContacts(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const result = await enrollmentService.bulkRemove(uid(req), req.params.id, req.body);
+    sendSuccess(res, result, `Successfully removed ${result.removed} contacts`);
+  } catch (err) { next(err); }
+}
+
+// ─── PATCH /api/sequences/:id/contacts/reenroll ──────────────────
+export async function bulkReenrollContacts(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const result = await enrollmentService.bulkReenroll(uid(req), req.params.id, req.body);
+    sendSuccess(res, result, `Successfully re-enrolled ${result.reenrolled} contacts`);
+  } catch (err) { next(err); }
+}
+
+// ─── GET /api/sequences/:id/contacts/export ──────────────────────
+export async function exportContacts(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const rows = await enrollmentService.exportContacts(uid(req), req.params.id, req.query as any);
+    const headers = ['Email','First Name','Last Name','Company','Status','Current Step','Enrolled At','Last Activity'];
+    const csv = [
+      headers.join(','),
+      ...rows.map(r => [
+        r.contact_email, r.contact_first_name, r.contact_last_name ?? '',
+        r.contact_company ?? '', r.status, r.current_step_index,
+        r.enrolled_at ? new Date(r.enrolled_at).toISOString() : '',
+        r.last_activity_at ? new Date(r.last_activity_at).toISOString() : '',
+      ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')),
+    ].join('\n');
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="recipients-${req.params.id}.csv"`);
+    res.status(200).send(csv);
+  } catch (err) { next(err); }
+}
+

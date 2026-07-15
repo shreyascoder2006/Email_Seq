@@ -11,6 +11,7 @@ import { LoadingSpinner } from '../components/ui/LoadingSpinner';
 import { Tooltip, TooltipProvider, TooltipTrigger, TooltipContent } from '../components/ui/Tooltip';
 import { WizardHeader } from './SequenceBuilderWizard';
 import { Info } from 'lucide-react';
+import { RescheduleCampaignModal } from '../components/sequences/RescheduleCampaignModal';
 
 export function SequenceRecipientsManager() {
   const { id } = useParams<{ id: string }>();
@@ -21,6 +22,7 @@ export function SequenceRecipientsManager() {
   const [contacts, setContacts] = useState<SequenceContact[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isRescheduleModalOpen, setIsRescheduleModalOpen] = useState(false);
 
   const fetchData = useCallback(async () => {
     if (!id) return;
@@ -141,12 +143,21 @@ export function SequenceRecipientsManager() {
     }
   };
 
+  const handleReschedule = () => {
+    if (!sequence) return;
+    if (selectedIds.size === 0) { toast('No contacts selected', { icon: 'ℹ️' }); return; }
+    setIsRescheduleModalOpen(true);
+  };
+
   const handleComingSoon = () => {
     toast('Coming Soon', { icon: '🚧' });
   };
 
   const handleToggleStatus = async (isActive: boolean) => {
     if (!sequence) return;
+    // Guard: skip no-op transitions to avoid state machine errors
+    if (isActive && sequence.status === 'active') return;
+    if (!isActive && sequence.status === 'paused') return;
     try {
       if (isActive) {
         const updated = await sequenceService.activate(sequence._id);
@@ -247,7 +258,7 @@ export function SequenceRecipientsManager() {
 
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <button onClick={handleComingSoon} className="w-10 h-10 flex items-center justify-center rounded-[10px] border border-gray-200 bg-white hover:bg-gray-50 hover:border-indigo-200 transition-colors shadow-sm group">
+                      <button onClick={handleReschedule} className="w-10 h-10 flex items-center justify-center rounded-[10px] border border-gray-200 bg-white hover:bg-gray-50 hover:border-indigo-200 transition-colors shadow-sm group">
                         <Calendar className="w-[18px] h-[18px] text-indigo-600 group-hover:text-indigo-700" />
                       </button>
                     </TooltipTrigger>
@@ -408,13 +419,21 @@ export function SequenceRecipientsManager() {
                         </td>
                         <td className="p-4">
                           <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold ${
-                            contact.status === 'active' ? 'bg-emerald-50 text-emerald-600' :
-                            contact.status === 'paused' ? 'bg-orange-50 text-orange-600' :
+                            contact.status === 'active'       ? 'bg-emerald-50 text-emerald-600' :
+                            contact.status === 'paused'       ? 'bg-orange-50 text-orange-600'  :
+                            contact.status === 'unsubscribed' ? 'bg-red-50 text-red-600'         :
+                            contact.status === 'bounced'      ? 'bg-gray-100 text-gray-500'      :
+                            contact.status === 'completed'    ? 'bg-blue-50 text-blue-600'       :
+                            contact.status === 'replied'      ? 'bg-teal-50 text-teal-600'       :
                             'bg-gray-100 text-gray-600'
                           }`}>
                             <span className={`w-1.5 h-1.5 rounded-full ${
-                              contact.status === 'active' ? 'bg-emerald-500' :
-                              contact.status === 'paused' ? 'bg-orange-500' :
+                              contact.status === 'active'       ? 'bg-emerald-500' :
+                              contact.status === 'paused'       ? 'bg-orange-500'  :
+                              contact.status === 'unsubscribed' ? 'bg-red-500'     :
+                              contact.status === 'bounced'      ? 'bg-gray-400'    :
+                              contact.status === 'completed'    ? 'bg-blue-500'    :
+                              contact.status === 'replied'      ? 'bg-teal-500'    :
                               'bg-gray-400'
                             }`} />
                             <span className="capitalize">{contact.status}</span>
@@ -476,6 +495,17 @@ export function SequenceRecipientsManager() {
 
       </div>
 
+      {isRescheduleModalOpen && sequence && (
+        <RescheduleCampaignModal
+          sequenceId={sequence._id}
+          contactIds={Array.from(selectedIds)}
+          onClose={() => setIsRescheduleModalOpen(false)}
+          onSuccess={() => {
+            setSelectedIds(new Set());
+            fetchData();
+          }}
+        />
+      )}
     </div>
   );
 }

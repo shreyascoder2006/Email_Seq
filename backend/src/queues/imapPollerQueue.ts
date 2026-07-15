@@ -1,10 +1,8 @@
 import { Queue, Worker, Job } from 'bullmq';
-import { BULL_REDIS_URL, BULL_REDIS_TLS } from '../config/redis';
+import { BULL_REDIS_TLS, REDIS_HOST, REDIS_PORT, REDIS_PASSWORD } from '../config/redis';
 import { EmailConnection, ConnectionStatus } from '../models/EmailConnection';
 import { SequenceContact, ContactEnrollmentStatus } from '../models/SequenceContact';
-import { SendingLog } from '../models/SendingLog';
-import { ReplyLog, ReplyClassification } from '../models/ReplyLog';
-import { Sequence } from '../models/Sequence';
+import { inboundMessageService } from '../services/inboundMessage.service';
 import { emailConnectionService } from '../services/emailConnection.service';
 import { env } from '../config/env';
 import logger from '../config/logger';
@@ -19,17 +17,19 @@ const IMAP_POLL_INTERVAL   = 10; // minutes
 // CRITICAL: Every BullMQ instance (Queue, Worker) MUST receive its
 // own dedicated connection object. Sharing causes silent poll failures.
 function makeConnection(label: string) {
-  const url = new URL(BULL_REDIS_URL);
   return {
-    host: url.hostname,
-    port: parseInt(url.port || '6379', 10),
-    ...(url.password ? { password: url.password } : {}),
-    ...(BULL_REDIS_TLS ? { tls: {} } : {}),
+    host:                 REDIS_HOST,
+    port:                 REDIS_PORT,
+    ...(REDIS_PASSWORD  ? { password: REDIS_PASSWORD } : {}),
+    ...(BULL_REDIS_TLS  ? { tls: {} } : {}),
     maxRetriesPerRequest: null,
-    enableReadyCheck: false,
+    enableReadyCheck:     false,
     retryStrategy: (times: number) => {
-      if (times > 5) return null;
-      return Math.min(times * 500, 2_000);
+      const delay = Math.min(times * 500, 30_000);
+      logger.warn(`[IMAP-CONN:${label}] Redis reconnect attempt #${times} in ${delay}ms`, {
+        host: REDIS_HOST, port: REDIS_PORT,
+      });
+      return delay;
     },
   };
 }
@@ -121,7 +121,7 @@ async function processImapPoll(job: Job): Promise<void> {
 
       const fetchGenerator = client.fetch(
         { seen: false, since: sinceDate },
-        { envelope: true, uid: true }
+        { envelope: true, uid: true } // Deferred source fetching for performance
       );
 
       let parsedCount = 0;
@@ -130,66 +130,29 @@ async function processImapPoll(job: Job): Promise<void> {
       for await (const msg of fetchGenerator) {
         parsedCount++;
 
-        const inReplyTo = msg.envelope?.inReplyTo;
-        const messageId = msg.envelope?.messageId;
+        const fromAddress = msg.envelope?.from?.[0]?.address?.toLowerCase() || '';
+        const subject     = msg.envelope?.subject?.toLowerCase() || '';
+        const isMailerDaemon = fromAddress.includes('mailer-daemon') || fromAddress.includes('postmaster') || fromAddress.includes('bounce');
+        const isDeliveryStatus = subject.includes('delivery status notification') || subject.includes('undeliverable') || subject.includes('returned mail');
 
-        if (!inReplyTo) continue;
-
-        const cleanInReplyTo = inReplyTo.replace(/[<>]/g, '');
-
-        const sendingLog = await SendingLog.findOne({
-          email_connection_id: connection._id,
-          message_id: { $regex: new RegExp(cleanInReplyTo, 'i') },
-        });
-
-        if (sendingLog) {
-          matchedCount++;
-
-          const existingReply = await ReplyLog.exists({
-            sending_log_id: sendingLog._id,
-            message_id: messageId,
-          });
-
-          if (!existingReply) {
-            const fromAddress = msg.envelope?.from?.[0]?.address || 'unknown';
-            const fromName    = msg.envelope?.from?.[0]?.name || '';
-
-            await ReplyLog.create({
-              sequence_id:         sendingLog.sequence_id,
-              sequence_contact_id: sendingLog.sequence_contact_id,
-              sending_log_id:      sendingLog._id,
-              user_id:             sendingLog.user_id,
-              from_email:          fromAddress,
-              from_name:           fromName,
-              to_email:            sendingLog.from_email,
-              subject:             msg.envelope?.subject || 'Re: Unknown',
-              message_id:          messageId,
-              in_reply_to:         inReplyTo,
-              replied_to_step_index: sendingLog.step_index,
-              classification:      ReplyClassification.UNKNOWN,
-              imap_uid:            msg.uid,
-              received_at:         msg.envelope?.date || new Date(),
-            });
-
-            await SequenceContact.updateOne(
-              { _id: sendingLog.sequence_contact_id },
-              {
-                status: ContactEnrollmentStatus.REPLIED,
-                has_replied: true,
-                next_send_at: null,
-              }
-            );
-
-            await Sequence.updateOne(
-              { _id: sendingLog.sequence_id },
-              { $inc: { 'stats.replies': 1 } }
-            );
-
-            logger.info(`Recorded reply for contact ${sendingLog.to_email}`, {
-              sequenceContactId: sendingLog.sequence_contact_id,
-            });
+        let sourceText = '';
+        if (isMailerDaemon || isDeliveryStatus) {
+          const fullMsg = await client.fetchOne(msg.uid, { source: true });
+          if (fullMsg && typeof fullMsg !== 'boolean') {
+            sourceText = fullMsg.source?.toString() || '';
           }
         }
+
+        const result = await inboundMessageService.processMessage(
+          connection._id as any,
+          msg.envelope,
+          sourceText,
+          msg.uid
+        );
+
+        // Always mark as seen so we do not infinitely retry broken DSNs or ignored spam
+        matchedCount++;
+        try { await client.messageFlagsAdd(msg.uid, ['\\Seen'], { uid: true }); } catch (e) {}
       }
 
       logger.debug(`IMAP poll complete for ${connection.label}: Scanned ${parsedCount}, Matched ${matchedCount}`);

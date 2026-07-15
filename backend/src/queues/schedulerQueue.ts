@@ -14,7 +14,7 @@
  */
 
 import { Queue, Worker, Job, QueueEvents } from 'bullmq';
-import { BULL_REDIS_URL, BULL_REDIS_TLS } from '../config/redis';
+import { BULL_REDIS_TLS, REDIS_HOST, REDIS_PORT, REDIS_PASSWORD } from '../config/redis';
 import { SequenceContact, ContactEnrollmentStatus } from '../models/SequenceContact';
 import { Sequence } from '../models/Sequence';
 import { env } from '../config/env';
@@ -48,26 +48,22 @@ const BATCH_SIZE           = parseInt(env.SCHEDULER_BATCH_SIZE ?? '50', 10);
 // receive its own independent connection object. Sharing causes the
 // Worker's blocking-poll client to collide and silently stop consuming.
 function makeConnection(label: string) {
-  const url = new URL(BULL_REDIS_URL);
-  const conn = {
-    host:                url.hostname,
-    port:                parseInt(url.port || '6379', 10),
-    ...(url.password ? { password: url.password } : {}),
+  logger.debug(`[SCHEDULER] Creating dedicated Redis connection for: ${label}`, { host: REDIS_HOST, port: REDIS_PORT });
+  return {
+    host:                 REDIS_HOST,
+    port:                 REDIS_PORT,
+    ...(REDIS_PASSWORD  ? { password: REDIS_PASSWORD } : {}),
     ...(BULL_REDIS_TLS  ? { tls: {} } : {}),
     maxRetriesPerRequest: null,
     enableReadyCheck:     false,
     retryStrategy: (times: number) => {
-      if (times > 5) {
-        logger.warn(`[SCHEDULER-CONN:${label}] Redis retry #${times} — giving up`);
-        return null;
-      }
-      const delay = Math.min(times * 500, 2_000);
-      logger.warn(`[SCHEDULER-CONN:${label}] Redis retry #${times}, reconnecting in ${delay}ms`);
+      const delay = Math.min(times * 500, 30_000);
+      logger.warn(`[SCHEDULER-CONN:${label}] Redis reconnect attempt #${times} in ${delay}ms`, {
+        host: REDIS_HOST, port: REDIS_PORT,
+      });
       return delay;
     },
   };
-  logger.debug(`[SCHEDULER] Creating dedicated Redis connection for: ${label}`);
-  return conn;
 }
 
 // ─── Module-level instances ────────────────────────────────────────
@@ -141,7 +137,7 @@ export async function runScheduler(_job?: Job): Promise<void> {
     const missedContacts = await SequenceContact.find(contactQuery)
       .sort({ next_send_at: 1 })
       .limit(BATCH_SIZE)
-      .select('_id sequence_id current_step_index next_send_at contact_email')
+      .select('_id sequence_id current_step_index next_send_at contact_email schedule_version')
       .lean();
 
     if (missedContacts.length === 0) {
@@ -157,13 +153,20 @@ export async function runScheduler(_job?: Job): Promise<void> {
     for (const c of missedContacts) {
       if (c.next_send_at) {
         try {
-          await enqueueEmailJob(
+          const jobId = await enqueueEmailJob(
             c._id.toString(),
             c.current_step_index,
             c.next_send_at,
             c.sequence_id.toString(),
+            c.schedule_version || 1,
             tickSource === 'periodic' ? 'reconciliation_sweep' : tickSource
           );
+          if (jobId) {
+            await SequenceContact.updateOne(
+              { _id: c._id },
+              { $set: { current_job_id: jobId, job_scheduled_at: new Date() } }
+            );
+          }
           enqueuedCount++;
         } catch (err: any) {
           logger.error('[SCHEDULER] Failed to re-enqueue missed job', {

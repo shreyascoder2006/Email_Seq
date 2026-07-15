@@ -90,6 +90,10 @@ export const Sequences: React.FC = () => {
   // Actions
 
   const handleUpdateStatus = async (id: string, newStatus: Sequence['status']) => {
+    // Guard: skip no-op transitions to avoid state machine errors
+    const currentSeq = sequences.find(s => s._id === id);
+    if (currentSeq && currentSeq.status === newStatus) return;
+
     try {
       if (newStatus === 'active') {
         const updated = await sequenceService.activate(id);

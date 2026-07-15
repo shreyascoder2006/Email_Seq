@@ -245,19 +245,26 @@ router.post('/rebuild-queue', async (req: Request, res: Response) => {
     const activeContacts = await SequenceContact.find({
       status: ContactEnrollmentStatus.ACTIVE,
       next_send_at: { $ne: null }
-    }).select('_id current_step_index next_send_at sequence_id').lean();
+    }).select('_id current_step_index next_send_at sequence_id schedule_version').lean();
 
     // 3. Re-enqueue delayed jobs
     let enqueued = 0;
     for (const c of activeContacts) {
       if (c.next_send_at) {
-        await enqueueEmailJob(
+        const jobId = await enqueueEmailJob(
           c._id.toString(),
           c.current_step_index,
           c.next_send_at,
           c.sequence_id.toString(),
+          c.schedule_version || 1,
           'rebuild-queue'
         );
+        if (jobId) {
+          await SequenceContact.updateOne(
+            { _id: c._id },
+            { $set: { current_job_id: jobId, job_scheduled_at: new Date() } }
+          );
+        }
         enqueued++;
       }
     }

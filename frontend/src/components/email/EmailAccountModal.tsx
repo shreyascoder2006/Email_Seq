@@ -6,12 +6,15 @@ import { X, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import type { EmailConnection, CreateEmailConnectionDto } from '../../types';
+import type { SmtpPrefill } from './ProviderSelectionModal';
 
 interface EmailAccountModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSubmit: (data: CreateEmailConnectionDto) => Promise<void>;
   initialData?: EmailConnection | null;
+  /** SMTP defaults injected by ProviderSelectionModal for new-account creation */
+  prefillData?: SmtpPrefill;
 }
 
 const accountSchema = z.object({
@@ -44,6 +47,7 @@ export const EmailAccountModal: React.FC<EmailAccountModalProps> = ({
   onClose,
   onSubmit,
   initialData,
+  prefillData,
 }) => {
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'basic' | 'smtp' | 'imap'>('basic');
@@ -65,26 +69,41 @@ export const EmailAccountModal: React.FC<EmailAccountModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       if (initialData) {
+        // Edit mode: restore saved values, never pre-fill passwords
         reset({
           ...initialData,
-          smtp_password: '', // never pre-fill password
-          imap_password: '', // never pre-fill password
+          smtp_password: '',
+          imap_password: '',
           reply_to: initialData.reply_to || '',
           imap_host: initialData.imap_host || '',
           imap_username: initialData.imap_username || '',
         });
       } else {
+        // Create mode: apply provider defaults if provided, otherwise use blank defaults
         reset({
-          label: '', from_name: '', from_email: '', reply_to: '',
-          smtp_host: '', smtp_port: 587, smtp_encryption: 'tls', smtp_username: '', smtp_password: '',
-          imap_host: '', imap_port: 993, imap_encryption: 'ssl', imap_username: '', imap_password: '',
-          daily_limit: 200, hourly_limit: 50, min_interval_seconds: 60,
+          label: '',
+          from_name: '',
+          from_email: '',
+          reply_to: '',
+          smtp_host:       prefillData?.smtp_host       ?? '',
+          smtp_port:       prefillData?.smtp_port       ?? 587,
+          smtp_encryption: prefillData?.smtp_encryption ?? 'tls',
+          smtp_username: '',
+          smtp_password: '',
+          imap_host:       prefillData?.imap_host       ?? '',
+          imap_port:       prefillData?.imap_port       ?? 993,
+          imap_encryption: prefillData?.imap_encryption ?? 'ssl',
+          imap_username: '',
+          imap_password: '',
+          daily_limit: 200,
+          hourly_limit: 50,
+          min_interval_seconds: 60,
         });
       }
       setActiveTab('basic');
       setIsAdvancedOpen(false);
     }
-  }, [isOpen, initialData, reset]);
+  }, [isOpen, initialData, prefillData, reset]);
 
   if (!isOpen) return null;
 

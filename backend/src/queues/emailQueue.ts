@@ -1,5 +1,5 @@
 import { Queue, Worker, QueueEvents, Job, ConnectionOptions, UnrecoverableError } from 'bullmq';
-import { BULL_REDIS_URL, BULL_REDIS_TLS } from '../config/redis';
+import { BULL_REDIS_TLS, REDIS_HOST, REDIS_PORT, REDIS_PASSWORD, redisClient } from '../config/redis';
 import { SequenceContact, ContactEnrollmentStatus } from '../models/SequenceContact';
 import { SequenceStep } from '../models/SequenceStep';
 import { Sequence } from '../models/Sequence';
@@ -14,7 +14,7 @@ import { env, isDev } from '../config/env';
 import logger from '../config/logger';
 import nodemailer from 'nodemailer';
 import crypto from 'crypto';
-import { encrypt } from '../utils/crypto';
+import { generateUnsubscribeToken } from '../utils/unsubscribeToken';
 
 const QUEUE_NAME       = env.EMAIL_QUEUE_NAME;
 const CONCURRENCY      = parseInt(env.QUEUE_CONCURRENCY,   10);
@@ -71,22 +71,20 @@ export function recordSuccessfulEmailSend(to: string, sequenceId: string) {
 // receive its own independent connection object. Sharing causes the
 // Worker's blocking-poll client to collide and silently stop consuming.
 function makeConnection(label: string): ConnectionOptions {
-  const url = new URL(BULL_REDIS_URL);
+  // Use pre-resolved REDIS_HOST (127.0.0.1, not 'localhost') to avoid
+  // Node's IPv6-first DNS resolving localhost → ::1 while Memurai binds 127.0.0.1.
   return {
-    host: url.hostname,
-    port: parseInt(url.port || '6379', 10),
-    ...(url.password ? { password: url.password } : {}),
-    ...(url.username && url.username !== 'default' ? { username: url.username } : {}),
+    host: REDIS_HOST,
+    port: REDIS_PORT,
+    ...(REDIS_PASSWORD ? { password: REDIS_PASSWORD } : {}),
     ...(BULL_REDIS_TLS ? { tls: {} } : {}),
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
     retryStrategy: (times: number) => {
-      if (times > 5) {
-        logger.warn(`[EMAIL-CONN:${label}] Redis retry #${times} — giving up`);
-        return null;
-      }
-      const delay = Math.min(times * 500, 2_000);
-      logger.warn(`[EMAIL-CONN:${label}] Redis retry #${times}, reconnecting in ${delay}ms`);
+      const delay = Math.min(times * 500, 30_000);
+      logger.warn(`[EMAIL-CONN:${label}] Redis reconnect attempt #${times} in ${delay}ms`, {
+        host: REDIS_HOST, port: REDIS_PORT,
+      });
       return delay;
     },
   };
@@ -125,46 +123,55 @@ export async function enqueueEmailJob(
   stepIndex: number,
   nextSendAt: Date,
   sequenceId: string,
+  scheduleVersion: number,
   tickSource: string = 'delay_engine'
-): Promise<void> {
+): Promise<string | undefined> {
+  // CIRCUIT BREAKER: Prevent memory exhaustion if Redis is down.
+  // If Redis is offline, do NOT attempt to enqueue. queue.add() will hang indefinitely 
+  // (buffering in ioredis) while retrying, crashing the Node server if traffic is high.
+  if (redisClient.status !== 'ready') {
+    throw new Error('Circuit Breaker Open: Redis is currently offline. Cannot enqueue job.');
+  }
+
   const now = Date.now();
   const nextSendAtTimestamp = nextSendAt.getTime();
   const delayMs = Math.max(0, nextSendAtTimestamp - now);
   
-  // Deterministic Job ID: email-{contactId}-step{stepIndex}-{nextSendAtTimestamp}
-  const jobId = `email-${contactId}-step${stepIndex}-${nextSendAtTimestamp}`;
-
-  await emailQueue.add(
+  const job = await emailQueue.add(
     'email:send',
     {
       sequenceContactId: contactId,
       stepIndex,
       tickSource,
       sequenceId,
+      scheduleVersion,
     },
     {
-      jobId, // BullMQ will reject duplicate adds automatically
       delay: delayMs,
     }
   );
 
   logger.info('🕒 Enqueued delayed email job', {
-    jobId,
+    jobId: job.id,
     contactId,
     stepIndex,
     delayMs,
+    scheduleVersion,
     scheduledFor: nextSendAt.toISOString(),
   });
+
+  return job.id;
 }
 
 // ─── Email Send Processor ─────────────────────────────────────────
 // Exported so debug endpoints can invoke it directly without BullMQ.
 export async function processEmailSend(job: Job): Promise<void> {
-  const { sequenceContactId, stepIndex, tickSource, sequenceId } = job.data as {
+  const { sequenceContactId, stepIndex, tickSource, sequenceId, scheduleVersion } = job.data as {
     sequenceContactId: string;
     stepIndex:         number;
     tickSource?:       string;
     sequenceId?:       string;
+    scheduleVersion?:  number;
   };
 
   logger.info('📨 Email worker: job received', {
@@ -210,6 +217,16 @@ export async function processEmailSend(job: Job): Promise<void> {
   });
 
   try {
+
+  // Validate schedule version
+  if (scheduleVersion !== undefined && scheduleVersion !== contact.schedule_version) {
+    logger.debug('Email worker: ignoring stale job due to schedule_version mismatch', {
+      sequenceContactId,
+      jobScheduleVersion: scheduleVersion,
+      contactScheduleVersion: contact.schedule_version,
+    });
+    return; // Job is stale, ignore it
+  }
 
   if (contact.status !== ContactEnrollmentStatus.ACTIVE) {
     logger.info(`Email worker: skipping — contact status is "${contact.status}"`, {
@@ -387,6 +404,13 @@ export async function processEmailSend(job: Job): Promise<void> {
   });
   await sendingLog.save();
 
+  // Generate HMAC-SHA256 unsubscribe token before rendering so the footer URL is correct
+  const unsubscribeToken = generateUnsubscribeToken(
+    contact._id.toString(),
+    contact.sequence_id.toString()
+  );
+  const unsubscribeUrl = `${env.APP_BASE_URL}/api/unsubscribe/${unsubscribeToken}`;
+
   const rendered = renderEmail(
     {
       subject:   rawSubject,
@@ -407,6 +431,7 @@ export async function processEmailSend(job: Job): Promise<void> {
       messageId:         messageId.replace(/[<>]/g, ''), // Strip <> for pixel URL
       trackOpens:        step.track_opens  ?? sequence.track_opens,
       trackClicks:       step.track_clicks ?? sequence.track_clicks,
+      unsubscribeUrl,
     }
   );
 
@@ -449,6 +474,21 @@ export async function processEmailSend(job: Job): Promise<void> {
     };
   }
 
+  // --- DIAGNOSTIC 1: Log Sender Resolution ---
+  logger.info('\n\n=== DIAGNOSTIC 1: SENDER RESOLUTION ===', {
+    connectionId: connectionId.toString(),
+    senderSource,
+    smtpHost: connection.smtp_host,
+    smtpPort: connection.smtp_port,
+    encryptionType: connection.smtp_encryption,
+    secureFlag: connection.smtp_encryption === 'ssl',
+    smtpUsername: connection.smtp_username,
+    fromEmail: connection.from_email,
+    replyTo: connection.reply_to || connection.from_email,
+    passwordLength: smtpPassword ? smtpPassword.length : 0,
+    tlsRejectUnauthorized: connection.provider !== 'custom'
+  });
+
   const transporter = nodemailer.createTransport({
     host:   connection.smtp_host,
     port:   connection.smtp_port,
@@ -460,8 +500,48 @@ export async function processEmailSend(job: Job): Promise<void> {
     connectionTimeout: 15_000,
   });
 
-  const unsubscribeToken = encodeURIComponent(encrypt(contact._id.toString()));
-  const unsubscribeUrl = `${env.APP_BASE_URL}/unsubscribe/${unsubscribeToken}`;
+  const mailOptions = {
+    from:    `"${connection.from_name}" <${connection.from_email}>`,
+    replyTo: connection.reply_to || connection.from_email,
+    to:      contact.contact_email,
+    cc:      (step as any).cc?.length ? (step as any).cc : undefined,
+    bcc:     (step as any).bcc?.length ? (step as any).bcc : undefined,
+    subject: rendered.subject,
+    html:    rendered.body_html,
+    text:    rendered.body_text || undefined,
+    messageId: messageId,
+    headers: {
+      // RFC 2369 — enables native Unsubscribe button in Gmail / Apple Mail
+      'List-Unsubscribe':      `<${unsubscribeUrl}>`,
+      // RFC 8058 — enables one-click unsubscribe for mail clients
+      'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+      'X-Mailer':              'EmailSequencer v1.0',
+      'X-Sequence-ID':         contact.sequence_id.toString(),
+      // X-Contact-ID intentionally omitted — exposing internal IDs violates security policy
+    },
+  };
+
+  // --- DIAGNOSTIC 2: Log Mail Payload ---
+  logger.info('\n\n=== DIAGNOSTIC 2: MAIL PAYLOAD ===', {
+    from: mailOptions.from,
+    to: mailOptions.to,
+    subject: mailOptions.subject,
+    envelope: (mailOptions as any).envelope,
+    replyTo: mailOptions.replyTo,
+    cc: mailOptions.cc,
+    bcc: mailOptions.bcc,
+    attachmentsCount: 0,
+    headerNames: Object.keys(mailOptions.headers),
+    messageId: mailOptions.messageId
+  });
+
+  // --- DIAGNOSTIC 3: Verify SMTP Again ---
+  try {
+    await transporter.verify();
+    logger.info('\n\n=== DIAGNOSTIC 3: VERIFY PASSED ===');
+  } catch (vErr: any) {
+    logger.error('\n\n=== DIAGNOSTIC 3: VERIFY FAILED ===', { error: vErr.message });
+  }
 
   logger.info('Email worker: starting SMTP send', {
     to:         contact.contact_email,
@@ -474,23 +554,18 @@ export async function processEmailSend(job: Job): Promise<void> {
   });
 
   try {
-    await transporter.sendMail({
-      from:    `"${connection.from_name}" <${connection.from_email}>`,
-      replyTo: connection.reply_to || connection.from_email,
-      to:      contact.contact_email,
-      cc:      (step as any).cc?.length ? (step as any).cc : undefined,
-      bcc:     (step as any).bcc?.length ? (step as any).bcc : undefined,
-      subject: rendered.subject,
-      html:    rendered.body_html,
-      text:    rendered.body_text || undefined,
-      messageId: messageId,
-      headers: {
-        'List-Unsubscribe': `<${unsubscribeUrl}>`,
-        'X-Mailer': 'EmailSequencer v1.0',
-        'X-Sequence-ID':  contact.sequence_id.toString(),
-        'X-Contact-ID':   contact._id.toString(),
-      },
+    const info = await transporter.sendMail(mailOptions);
+    
+    // --- DIAGNOSTIC 5: Log Successful Sends ---
+    logger.info('\n\n=== DIAGNOSTIC 5: SEND SUCCESS ===', {
+      accepted: info.accepted,
+      rejected: info.rejected,
+      pending: info.pending,
+      envelope: info.envelope,
+      messageId: info.messageId,
+      response: info.response
     });
+
     logger.info('Email worker: SMTP send SUCCESS ✅', {
       to:       contact.contact_email,
       subject:  rendered.subject,
@@ -501,6 +576,19 @@ export async function processEmailSend(job: Job): Promise<void> {
     // Track successful send metrics
     recordSuccessfulEmailSend(contact.contact_email, contact.sequence_id.toString());
   } catch (err: any) {
+    // --- DIAGNOSTIC 4: Capture Complete Nodemailer Error ---
+    logger.error('\n\n=== DIAGNOSTIC 4: COMPLETE ERROR OBJECT ===', {
+      message: err.message,
+      code: err.code,
+      errno: err.errno,
+      syscall: err.syscall,
+      command: err.command,
+      response: err.response,
+      responseCode: err.responseCode,
+      rejected: err.rejected,
+      rejectedErrors: err.rejectedErrors,
+      stack: err.stack
+    });
     transporter.close();
     const is5xx = err.responseCode >= 500 && err.responseCode < 600;
     
@@ -601,7 +689,19 @@ export async function processEmailSend(job: Job): Promise<void> {
 
   // Enqueue next step if active
   if (contact.status === ContactEnrollmentStatus.ACTIVE && contact.next_send_at) {
-    await enqueueEmailJob(contact._id.toString(), contact.current_step_index, contact.next_send_at, contact.sequence_id.toString());
+    const nextJobId = await enqueueEmailJob(
+      contact._id.toString(), 
+      contact.current_step_index, 
+      contact.next_send_at, 
+      contact.sequence_id.toString(),
+      contact.schedule_version
+    );
+    if (nextJobId) {
+      await SequenceContact.updateOne(
+        { _id: contact._id },
+        { $set: { current_job_id: nextJobId, job_scheduled_at: new Date() } }
+      );
+    }
   }
 
   logger.info('Email sent successfully', {
@@ -734,13 +834,27 @@ export function startEmailWorker(): Worker | null {
     });
 
     // ── Lifecycle: error ──────────────────────────────────────────
-    worker.on('error', (err: Error) => {
+    worker.on('error', (err: unknown) => {
       // A connection-level error, not a per-job failure.
-      // If Redis drops, redisConnected flips false.
-      const isRedisErr = /ECONNREFUSED|ENOTFOUND|connect ETIMEDOUT/i.test(err.message);
+      const aggregateErr = err as { errors?: Error[]; message?: string };
+      if (Array.isArray(aggregateErr?.errors)) {
+        workerHealth.redisConnected = false;
+        aggregateErr.errors.forEach((sub: Error, i: number) => {
+          const code = (sub as NodeJS.ErrnoException).code;
+          logger.error(`Email worker: AggregateError[${i}]`, {
+            name: sub.name, message: sub.message, code,
+            worker: 'email-worker', host: REDIS_HOST, port: REDIS_PORT,
+          });
+        });
+        return;
+      }
+      const e = err as NodeJS.ErrnoException;
+      const isRedisErr = /ECONNREFUSED|ENOTFOUND|connect ETIMEDOUT/i.test(e.message ?? '');
       if (isRedisErr) workerHealth.redisConnected = false;
       logger.error('Email worker: connection/runtime error', {
-        error:     err.message,
+        name: e.name, message: e.message, code: e.code,
+        worker: 'email-worker', host: REDIS_HOST, port: REDIS_PORT,
+        redisStatus: redisClient.status,
         timestamp: new Date().toISOString(),
       });
     });

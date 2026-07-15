@@ -6,6 +6,7 @@ import { Button } from '../components/ui/Button';
 import { LoadingSpinner } from '../components/ui/LoadingSpinner';
 import { EmailAccountModal } from '../components/email/EmailAccountModal';
 import { ProviderSelectionModal } from '../components/email/ProviderSelectionModal';
+import type { SmtpPrefill } from '../components/email/ProviderSelectionModal';
 import { emailAccountService } from '../services/emailAccount.service';
 import type { EmailConnection, CreateEmailConnectionDto, UpdateEmailConnectionDto } from '../types';
 import { useSearchParams } from 'react-router-dom';
@@ -15,9 +16,10 @@ export const EmailAccounts: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [isModalOpen, setIsModalOpen] = useState(false); // Legacy SMTP modal
-  const [isProviderModalOpen, setIsProviderModalOpen] = useState(false); // New OAuth modal
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isProviderModalOpen, setIsProviderModalOpen] = useState(false);
   const [editingAccount, setEditingAccount] = useState<EmailConnection | null>(null);
+  const [smtpPrefill, setSmtpPrefill] = useState<SmtpPrefill | undefined>(undefined);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -52,11 +54,20 @@ export const EmailAccounts: React.FC = () => {
 
   const handleOpenCreate = () => {
     setEditingAccount(null);
+    setSmtpPrefill(undefined);
     setIsProviderModalOpen(true);
   };
 
   const handleOpenEdit = (account: EmailConnection) => {
     setEditingAccount(account);
+    setSmtpPrefill(undefined);
+    setIsModalOpen(true);
+  };
+
+  /** Called by ProviderSelectionModal when user picks SMTP connection */
+  const handleSelectSmtp = (prefill?: SmtpPrefill) => {
+    setSmtpPrefill(prefill);
+    setIsProviderModalOpen(false);
     setIsModalOpen(true);
   };
 
@@ -217,7 +228,7 @@ export const EmailAccounts: React.FC = () => {
       <ProviderSelectionModal
         isOpen={isProviderModalOpen}
         onClose={() => setIsProviderModalOpen(false)}
-        onSelectSmtp={() => setIsModalOpen(true)}
+        onSelectSmtp={handleSelectSmtp}
       />
 
       <EmailAccountModal
@@ -225,6 +236,7 @@ export const EmailAccounts: React.FC = () => {
         onClose={() => setIsModalOpen(false)}
         onSubmit={handleSubmit}
         initialData={editingAccount}
+        prefillData={smtpPrefill}
       />
     </div>
   );

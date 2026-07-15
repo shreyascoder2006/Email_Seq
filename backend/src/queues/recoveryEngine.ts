@@ -20,6 +20,7 @@
 
 import logger from '../config/logger';
 import redisClient from '../config/redis';
+import { env } from '../config/env';
 import {
   getHeartbeatAgeMs,
   getLastSchedulerTick,
@@ -69,6 +70,7 @@ const MAX_RECOVERY_ATTEMPTS = 5;        // After 5 failures in 1h → UNHEALTHY
 // ─── Recovery Engine ───────────────────────────────────────────────
 export class RecoveryEngine {
   private watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  private redisOfflineSince: number | null = null;
 
   // These are injected from schedulerQueue.ts after initialization
   private getSchedulerWorker: () => import('bullmq').Worker | null;
@@ -99,7 +101,12 @@ export class RecoveryEngine {
       await redisClient.ping();
       redisPingMs = Date.now() - t0;
       redisHealthy = true;
-    } catch { /* redis down */ }
+      this.redisOfflineSince = null; // Reset offline tracker
+    } catch { 
+      if (this.redisOfflineSince === null) {
+        this.redisOfflineSince = Date.now();
+      }
+    }
 
     // 2. Worker state
     const worker  = this.getSchedulerWorker();
@@ -195,7 +202,15 @@ export class RecoveryEngine {
     try {
       switch (report.verdict) {
         case 'redis_down':
-          logger.warn('[RECOVERY] Redis is down — cannot recover from application level. Waiting for reconnect.');
+          const maxOfflineMs = parseInt(env.QUEUE_MAX_OFFLINE_MS, 10);
+          const offlineDurationMs = this.redisOfflineSince ? Date.now() - this.redisOfflineSince : 0;
+          
+          if (offlineDurationMs > maxOfflineMs) {
+            logger.error(`[RECOVERY] Redis has been offline for ${Math.round(offlineDurationMs / 1000)}s (exceeds ${maxOfflineMs}ms). Restarting process to trigger fresh recovery.`);
+            process.exit(1);
+          }
+          
+          logger.warn(`[RECOVERY] Redis is down (offline for ${Math.round(offlineDurationMs / 1000)}s) — cannot recover from app level. Waiting for reconnect.`);
           return { action: 'redis_down', success: false, message: 'Redis unavailable. Recovery deferred until Redis reconnects.' };
 
         case 'worker_paused': {

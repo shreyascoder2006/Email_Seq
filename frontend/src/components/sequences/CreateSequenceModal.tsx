@@ -128,10 +128,13 @@ export const CreateSequenceModal: React.FC<CreateSequenceModalProps> = ({ isOpen
       let sH = now.getHours();
       let sM = isPast30 ? 30 : 0;
       
+      if (sH === 23 && sM === 30) {
+        sM = 0;
+      }
+      
       let eH = sH;
-      let eM = isPast30 ? 0 : 30;
-      if (isPast30) eH += 1;
-      if (eH >= 24) eH = 23;
+      let eM = sM === 30 ? 0 : 30;
+      if (sM === 30) eH += 1;
       
       return {
         name: '',
