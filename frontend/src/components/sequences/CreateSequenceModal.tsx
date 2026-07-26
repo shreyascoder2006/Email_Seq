@@ -120,33 +120,18 @@ export const CreateSequenceModal: React.FC<CreateSequenceModalProps> = ({ isOpen
     formState: { errors, isValid },
   } = useForm<WizardData>({
     resolver: zodResolver(wizardSchema),
-    defaultValues: (() => {
-      const now = new Date();
-      const currentMinute = now.getMinutes();
-      const isPast30 = currentMinute >= 30;
-      
-      let sH = now.getHours();
-      let sM = isPast30 ? 30 : 0;
-      
-      if (sH === 23 && sM === 30) {
-        sM = 0;
-      }
-      
-      let eH = sH;
-      let eM = sM === 30 ? 0 : 30;
-      if (sM === 30) eH += 1;
-      
-      return {
-        name: '',
-        sending_preference: 'immediate',
-        timezone: getDefaultTimezone(),
-        start_time_str: `${sH}:${sM.toString().padStart(2, '0')}`,
-        end_time_str: `${eH}:${eM.toString().padStart(2, '0')}`,
-        custom_days: [1, 2, 3, 4, 5],
-        daily_sending_limit: 200,
-        launch_date: now.toISOString().split('T')[0],
-      };
-    })(),
+    defaultValues: {
+      name: '',
+      sending_preference: 'immediate',
+      timezone: getDefaultTimezone(),
+      // Default window: 3:30 PM – 4:00 PM
+      start_time_str: '15:30',
+      end_time_str: '16:00',
+      // All 7 days active by default (SUN–SAT)
+      custom_days: [0, 1, 2, 3, 4, 5, 6],
+      daily_sending_limit: 200,
+      launch_date: new Date().toISOString().split('T')[0],
+    },
     mode: 'onChange',
   });
 

@@ -9,6 +9,7 @@ import importRouter        from './import.route';
 import analyticsRouter     from './analytics.route';
 import oauthRouter         from './oauth.route';
 import systemRouter        from './system.route';
+import aiRouter            from './ai.route';
 import redisDiagRouter     from './redis-diagnostics.route';
 
 const router = Router();
@@ -22,6 +23,7 @@ router.use('/templates',      templateRouter);
 router.use('/debug',          debugRouter);
 router.use('/imports',        importRouter);
 router.use('/analytics',      analyticsRouter);
+router.use('/ai',             aiRouter);
 router.use('/oauth',          oauthRouter);
 router.use('/system',         systemRouter);
 // Development diagnostics — unauthenticated for easy curl access

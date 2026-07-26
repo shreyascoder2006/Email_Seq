@@ -2,6 +2,7 @@ import { Types, FilterQuery } from 'mongoose';
 import { Sequence, ISequence, SequenceStatus } from '../models/Sequence';
 import { SequenceStep, ISequenceStep, StepType } from '../models/SequenceStep';
 import { SequenceContact } from '../models/SequenceContact';
+import { SendingLog } from '../models/SendingLog';
 import { calculateNextValidSlot } from '../utils/scheduling';
 import { EmailConnection, ConnectionStatus } from '../models/EmailConnection';
 import { getSchedulerQueue } from '../queues/schedulerQueue';
@@ -139,7 +140,7 @@ export class SequenceService {
   async findAll(
     userId: string,
     query: ListSequenceQueryDto
-  ): Promise<{ sequences: ISequence[]; total: number; page: number; totalPages: number }> {
+  ): Promise<{ sequences: (ISequence & { pending_count: number; last_activity_at: Date | null })[]; total: number; page: number; totalPages: number }> {
     const filter: FilterQuery<ISequence> = {
       user_id:     userId,
       is_archived: query.status === SequenceStatus.ARCHIVED ? true : { $ne: true },
@@ -163,8 +164,78 @@ export class SequenceService {
       Sequence.countDocuments(filter),
     ]);
 
+    // ── Enrich each sequence with pending_count and last_activity_at ─────────
+    // Two bulk aggregations (not N+1) using existing indexes:
+    //   SequenceContact: { sequence_id: 1, status: 1, next_send_at: 1 }  (scheduler index)
+    //   SendingLog:      { sequence_id: 1, status: 1, sent_at: -1 }       (analytics index)
+
+    const seqIds = sequences.map((s) => (s as any)._id);
+
+    if (seqIds.length > 0) {
+      const now = new Date();
+
+      const [pendingCounts, activityStats] = await Promise.all([
+        // pending_count: contacts actively enrolled and waiting for their next scheduled send
+        SequenceContact.aggregate<{ _id: Types.ObjectId; count: number }>([
+          {
+            $match: {
+              sequence_id: { $in: seqIds },
+              status: 'active',
+              $or: [
+                { next_send_at: { $gt: now } },
+                { next_send_at: null },
+              ],
+            },
+          },
+          { $group: { _id: '$sequence_id', count: { $sum: 1 } } },
+        ]),
+
+        // last_activity_at: most recent successful email send for each sequence
+        SendingLog.aggregate<{ _id: Types.ObjectId; last_sent_at: Date }>([
+          {
+            $match: {
+              sequence_id: { $in: seqIds },
+              status: 'sent',
+              sent_at: { $ne: null },
+            },
+          },
+          { $group: { _id: '$sequence_id', last_sent_at: { $max: '$sent_at' } } },
+        ]),
+      ]);
+
+      // Build O(1) lookup maps
+      const pendingMap = new Map<string, number>();
+      for (const row of pendingCounts) {
+        pendingMap.set(row._id.toString(), row.count);
+      }
+
+      const activityMap = new Map<string, Date>();
+      for (const row of activityStats) {
+        activityMap.set(row._id.toString(), row.last_sent_at);
+      }
+
+      // Merge into sequence objects
+      const enriched = sequences.map((seq) => {
+        const id = (seq as any)._id.toString();
+        return Object.assign(seq, {
+          pending_count:    pendingMap.get(id) ?? 0,
+          last_activity_at: activityMap.get(id) ?? null,
+        });
+      });
+
+      return {
+        sequences: enriched as (ISequence & { pending_count: number; last_activity_at: Date | null })[],
+        total,
+        page: query.page,
+        totalPages: Math.ceil(total / query.limit),
+      };
+    }
+
+    // No sequences — return empty with defaults
     return {
-      sequences,
+      sequences: sequences.map((seq) =>
+        Object.assign(seq, { pending_count: 0, last_activity_at: null })
+      ) as (ISequence & { pending_count: number; last_activity_at: Date | null })[],
       total,
       page: query.page,
       totalPages: Math.ceil(total / query.limit),
@@ -264,41 +335,36 @@ export class SequenceService {
         const isImmediate = dto.send_immediately === true;
         const now = new Date();
         const adjustedNextSendAt = isImmediate
-          ? new Date(Date.now() + 1000)
+          ? now // Use exactly 'now' so scheduler's $lte:now query matches it immediately
           : calculateNextValidSlot(now, seq.sending_window as any, seq.launch_date);
 
-        const contactFilter = isImmediate
-          ? { sequence_id: sequenceId, status: 'active' as const }
-          : {
-              sequence_id: sequenceId,
-              status:      'active' as const,
-              $or: [
-                { next_send_at: { $lte: now } },
-                { next_send_at: null },
-              ],
-            };
+        // [FIX] Always update ALL active contacts on re-launch.
+        // If contacts were enrolled while the sending window was already past,
+        // their next_send_at points to a future slot that is valid but stale
+        // (computed at enrollment time, not re-launch time). We must recalculate
+        // from now so the scheduler picks them up at the correct new slot.
+        const contactFilter = { sequence_id: sequenceId, status: 'active' as const };
 
         const updated = await SequenceContact.updateMany(contactFilter, {
           $set: { next_send_at: adjustedNextSendAt },
         });
         logger.info('[ACTIVATION] Re-scheduled contacts for active→active', {
-          sequenceId, matchedCount: updated.matchedCount, isImmediate,
+          sequenceId, matchedCount: updated.matchedCount, isImmediate, adjustedNextSendAt,
         });
 
         const liveSchedulerQueue = getSchedulerQueue();
         if (liveSchedulerQueue) {
-          try {
-            await liveSchedulerQueue.add(
-              'scheduler:tick:immediate',
-              { reason: 'sequence_relaunch', sequenceId: sequenceId.toString() },
-              { removeOnComplete: 5, removeOnFail: 5 }
-            );
+          liveSchedulerQueue.add(
+            'scheduler:tick:immediate',
+            { reason: 'sequence_relaunch', sequenceId: sequenceId.toString() },
+            { removeOnComplete: 5, removeOnFail: 5 }
+          ).then(() => {
             logger.info('[ACTIVATION] Enqueued immediate tick for re-launched sequence', { sequenceId });
-          } catch (redisErr: any) {
+          }).catch((redisErr: any) => {
             logger.warn('[ACTIVATION] Could not enqueue immediate tick (Redis unavailable) — scheduler will pick up on next periodic tick', {
               sequenceId, error: redisErr.message,
             });
-          }
+          });
         }
       } else {
         logger.info('Sequence transition skipped (already in target state)', { sequenceId, from, to });
@@ -362,13 +428,13 @@ export class SequenceService {
       // for all subsequent steps — window restrictions are fully restored.
       const isImmediate = dto.send_immediately === true;
 
-      const adjustedNextSendAt = isImmediate
-        ? new Date(Date.now() + 1000)
+      const adjustedNextSendAt = isImmediate 
+        ? now // Use exactly 'now' so it matches next_send_at <= now
         : calculateNextValidSlot(now, seq.sending_window as any, seq.launch_date);
 
       // Scheduler verification:
       //   runScheduler() queries: { status:'active', next_send_at:{ $lte: now }, sending_locked: false }
-      //   With isImmediate, adjustedNextSendAt = now+1s ≤ now within 1s → scheduler sweep catches it.
+      //   With isImmediate, adjustedNextSendAt = now ≤ now → scheduler sweep catches it.
       //   The immediate tick enqueued below ensures the sweep runs within seconds of activation.
 
       logger.info('[ACTIVATION] Scheduling mode determined', {
@@ -379,17 +445,23 @@ export class SequenceService {
         contactBecomesImmediatelyDue: isImmediate,
       });
 
-      // Select the correct filter based on mode (see explanation above)
-      const contactFilter = isImmediate
-        ? { sequence_id: sequenceId, status: 'active' as const }
-        : {
-            sequence_id: sequenceId,
-            status:      'active' as const,
-            $or: [
-              { next_send_at: { $lte: now } },
-              { next_send_at: null },
-            ],
-          };
+      // [FIX] Always update ALL active contacts on activation — regardless of whether
+      // send_immediately is true or false.
+      //
+      // REASON: Contacts are enrolled before the sequence is activated. During enrollment
+      // the sending window may already be closed for today, so enrollment.service.ts
+      // correctly sets next_send_at to the NEXT available window slot (e.g. tomorrow 15:30).
+      // When the user then activates with send_immediately=false, the old narrow filter
+      // ({ next_send_at: { $lte: now } }) matched 0 contacts (they were all in the future)
+      // and left them stuck until the pre-computed slot arrived — which could be days away.
+      //
+      // The fix: always overwrite next_send_at for ALL active contacts using
+      // adjustedNextSendAt (which is either `now` for immediate, or the correctly
+      // recalculated next window slot computed at activation time). This is safe because:
+      //   - For isImmediate=true:  adjustedNextSendAt = now  → scheduler picks up instantly
+      //   - For isImmediate=false: adjustedNextSendAt = calculateNextValidSlot(now, ...)  
+      //     → may be the same future slot OR a new slot if the window changed
+      const contactFilter = { sequence_id: sequenceId, status: 'active' as const };
       
       const allActiveContacts = await SequenceContact.find({
         sequence_id: sequenceId,
@@ -463,18 +535,19 @@ export class SequenceService {
       // Enqueue immediate sequence-scoped tick so Launch Campaign sends without requiring restart
       const liveSchedulerQueue = getSchedulerQueue();
       if (liveSchedulerQueue) {
-        try {
-          await liveSchedulerQueue.add(
-            'scheduler:tick:immediate', 
-            { reason: 'sequence_activation', sequenceId: sequenceId.toString() }, 
-            { removeOnComplete: 5, removeOnFail: 5 }
-          );
+        // [FIX] Do not await this. If Redis is unavailable, BullMQ's offline queue
+        // will cause await to hang indefinitely. This is a background task.
+        liveSchedulerQueue.add(
+          'scheduler:tick:immediate', 
+          { reason: 'sequence_activation', sequenceId: sequenceId.toString() }, 
+          { removeOnComplete: 5, removeOnFail: 5 }
+        ).then(() => {
           logger.info('SEQUENCE ACTIVATION: Enqueued immediate sequence-scoped scheduler tick', { sequenceId: sequenceId.toString() });
-        } catch (redisErr: any) {
+        }).catch((redisErr: any) => {
           logger.warn('SEQUENCE ACTIVATION: Could not enqueue immediate tick (Redis unavailable) — scheduler will pick up on next periodic tick', {
             sequenceId, error: redisErr.message,
           });
-        }
+        });
       } else {
         logger.warn('SEQUENCE ACTIVATION: Scheduler queue not initialized — immediate tick skipped. Waiting for periodic tick.', { sequenceId: sequenceId.toString() });
       }

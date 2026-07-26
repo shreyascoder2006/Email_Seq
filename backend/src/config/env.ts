@@ -75,6 +75,10 @@ const envSchema = z.object({
 
   // Frontend
   FRONTEND_URL: z.string().default('http://localhost:5173'),
+
+  // AI / Gemini
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_MODEL: z.string().default('gemini-3.6-flash'),
 });
 
 // ─── Parse & validate ─────────────────────────────────────────────

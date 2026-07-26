@@ -1,8 +1,10 @@
 import api from './api';
 
+export type EmailLength = 'short' | 'medium' | 'long';
+
 export interface GenerateEmailRequest {
   objective: string;
-  length: string;
+  length: EmailLength;
   offering: string;
   audience: string;
   painPoint: string;

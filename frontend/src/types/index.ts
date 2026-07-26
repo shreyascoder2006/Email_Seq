@@ -88,6 +88,9 @@ export interface Sequence {
   needs_attention?: boolean;
   integrity_error?: boolean;
   last_integrity_error?: string | null;
+  // Enriched by findAll() aggregations
+  pending_count?: number;
+  last_activity_at?: string | null;
   stats: {
     total_contacts: number;
     active_contacts: number;

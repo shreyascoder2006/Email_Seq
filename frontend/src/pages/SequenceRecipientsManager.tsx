@@ -176,11 +176,10 @@ export function SequenceRecipientsManager() {
   const hasSelection = selectedIds.size > 0;
 
   return (
-    <div className="min-h-screen bg-[#F7F8FA] flex flex-col p-6">
+    <div className="min-h-screen bg-[#F7F8FA] flex flex-col">
       <Toaster position="top-right" />
 
       {/* Header Container */}
-      <div className="w-full">
         <WizardHeader
           sequence={sequence}
           onBack={() => navigate('/sequences')}
@@ -188,7 +187,6 @@ export function SequenceRecipientsManager() {
           currentStepId="recipients"
           onToggleStatus={handleToggleStatus}
         />
-      </div>
 
       {/* Body Layout */}
       <div className="flex flex-1 w-full mx-auto pb-20 pt-6 px-6">

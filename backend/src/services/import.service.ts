@@ -21,12 +21,15 @@ import {
 
 // ─── Constants ─────────────────────────────────────────────────────
 
-/** Regex patterns for auto-mapping CSV column names to system fields */
 const AUTO_MAP_RULES: Array<{ pattern: RegExp; field: string }> = [
-  { pattern: /^e[-_\s]?mail/i,                               field: 'email' },
-  { pattern: /^first[-_\s]?name|^given[-_\s]?name|^fname/i,  field: 'first_name' },
-  { pattern: /^last[-_\s]?name|^surname|^family[-_\s]?name|^lname/i, field: 'last_name' },
+  { pattern: /^e[-_\s]?mail|^email[-_\s]?address|^work[-_\s]?email/i, field: 'email' },
+  { pattern: /^first[-_\s]?name|^given[-_\s]?name|^fname|^first$/i, field: 'first_name' },
+  { pattern: /^last[-_\s]?name|^surname|^family[-_\s]?name|^lname|^last$/i, field: 'last_name' },
+  { pattern: /^full[-_\s]?name|^name|^contact[-_\s]?name/i, field: 'full_name' },
   { pattern: /^company|^org(anization)?|^employer|^business/i, field: 'company' },
+  { pattern: /^title|^job[-_\s]?title|^designation|^position|^role/i, field: 'title' },
+  { pattern: /^city|^location[-_\s]?city/i, field: 'city' },
+  { pattern: /^phone|^phone[-_\s]?number|^mobile/i, field: 'phone' },
 ];
 
 // ─── Helpers ───────────────────────────────────────────────────────

@@ -8,6 +8,7 @@ import sanitizeHtml from 'sanitize-html';
 import { ImportList } from '../models/ImportList';
 import { CustomField } from '../models/CustomField';
 import { z } from 'zod';
+import { STANDARD_CONTACT_TAGS, STANDARD_SENDER_TAGS, STANDARD_SEQUENCE_TAGS } from '../utils/mergeTags.registry';
 
 const extractVariables = (html: string) => {
   const regex = /{{\s*(\w+)(?:\|([^}]+))?\s*}}/g;
@@ -46,24 +47,9 @@ export const getMergeTags = async (req: AuthenticatedRequest, res: Response, nex
   try {
     const userId = req.user?.userId;
     
-    const contact = [
-      { tag: '{{first_name}}', label: 'First Name', desc: "Contact's first name" },
-      { tag: '{{last_name}}', label: 'Last Name', desc: "Contact's last name" },
-      { tag: '{{email}}', label: 'Email', desc: "Contact's email address" },
-      { tag: '{{company}}', label: 'Company', desc: "Contact's company name" },
-    ];
-
-    const sender = [
-      { tag: '{{sender_name}}', label: 'Sender Name', desc: "Your full name" },
-      { tag: '{{sender_email}}', label: 'Sender Email', desc: "Your email address" },
-      { tag: '{{signature}}', label: 'Signature', desc: "Your email signature" },
-    ];
-
-    const sequence = [
-      { tag: '{{sequence_name}}', label: 'Sequence Name', desc: "Name of the current sequence" },
-      { tag: '{{step_number}}', label: 'Step Number', desc: "Current step in the sequence" },
-      { tag: '{{current_date}}', label: 'Current Date', desc: "Today's date" },
-    ];
+    const contact = STANDARD_CONTACT_TAGS.map(t => ({ tag: t.tag, label: t.label, desc: t.desc }));
+    const sender = STANDARD_SENDER_TAGS.map(t => ({ tag: t.tag, label: t.label, desc: t.desc }));
+    const sequence = STANDARD_SEQUENCE_TAGS.map(t => ({ tag: t.tag, label: t.label, desc: t.desc }));
 
     // Aggregate custom fields from the user's import lists
     const importLists = await ImportList.find({ user_id: userId }).lean();

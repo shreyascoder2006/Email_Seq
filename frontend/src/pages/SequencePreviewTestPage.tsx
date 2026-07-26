@@ -154,10 +154,11 @@ const AVATAR_COLORS = [
 ];
 
 function PersonalizedPreviewCard({
-  contacts, template, sequenceId
+  contacts, template, step, sequenceId
 }: {
   contacts: SequenceContact[];
   template: Template | null;
+  step: SequenceStep | null;
   sequenceId: string;
 }) {
   const navigate = useNavigate();
@@ -168,13 +169,18 @@ function PersonalizedPreviewCard({
 
   const selected = contacts[selectedIdx];
 
+  // Priority: step override > template field > empty.
+  // Derived at component level so both fetchPreview and JSX can access it.
+  const htmlSource = (step as any)?.body_html_override || template?.body_html || '';
+  const subjSource = (step as any)?.subject_override   || template?.subject   || '';
+
   const fetchPreview = useCallback(async () => {
-    if (!template || !selected) return;
+    if (!selected || (!htmlSource && !subjSource)) return;
     setLoading(true);
     try {
       const res = await templateService.previewRaw({
-        html: template.body_html || '',
-        subject: template.subject || '',
+        html: htmlSource,
+        subject: subjSource,
       });
       // Client-side replace contact-specific tags
       const vars: Record<string, string> = {
@@ -184,7 +190,6 @@ function PersonalizedPreviewCard({
         company: selected.contact_company || '',
         company_name: selected.contact_company || '',
       };
-      // merge custom_variables if available
       if (selected.custom_variables) {
         const cv = selected.custom_variables as any;
         if (typeof cv === 'object') {
@@ -197,12 +202,13 @@ function PersonalizedPreviewCard({
       setPreviewHtml(replace(res.html));
       setPreviewSubject(replace(res.subject));
     } catch {
-      setPreviewHtml(template.body_html || '');
-      setPreviewSubject(template.subject || '');
+      setPreviewHtml(htmlSource);
+      setPreviewSubject(subjSource);
     } finally {
       setLoading(false);
     }
-  }, [template, selected]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [htmlSource, subjSource, selected]);
 
   useEffect(() => { fetchPreview(); }, [fetchPreview]);
 
@@ -263,15 +269,15 @@ function PersonalizedPreviewCard({
             <div className="flex items-center justify-center h-48">
               <LoadingSpinner size={24} />
             </div>
-          ) : !template ? (
+          ) : !htmlSource && !subjSource ? (
             <div className="flex flex-col items-center justify-center h-48 text-gray-400">
               <AlertCircle className="w-10 h-10 mb-2 opacity-40" />
-              <p className="text-sm font-medium">No template assigned to this sequence.</p>
+              <p className="text-sm font-medium">No email content found for this step.</p>
               <button
                 onClick={() => navigate(`/sequences/${sequenceId}/builder-v2`)}
                 className="mt-3 text-indigo-600 text-sm font-semibold hover:underline"
               >
-                Add an email template →
+                Add email content →
               </button>
             </div>
           ) : (
@@ -313,7 +319,7 @@ function LaunchModal({
   onLaunch: (sendImmediately: boolean) => void;
   launching: boolean;
 }) {
-  const [sendImmediately, setSendImmediately] = useState(false);
+  const [sendImmediately, setSendImmediately] = useState(true);
   const activeEmailSteps = steps.filter(s => s.type === 'email' && s.is_active);
   const uniqueConnections = new Set();
   activeEmailSteps.forEach(s => {
@@ -617,16 +623,31 @@ export function SequencePreviewTestPage() {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const handleLaunch = async (sendImmediately = false) => {
-    if (!sequence) return;
+    console.log("[LAUNCH-FE] Button clicked");
+    console.log("[LAUNCH-FE] Starting launch handler", {
+      sequenceId: sequence?._id,
+      sendImmediately,
+    });
+    if (!sequence) {
+      console.log("[LAUNCH-FE] No sequence, aborting");
+      return;
+    }
     setLaunching(true);
     try {
-      await sequenceService.activate(sequence._id, sendImmediately);
+      console.log("[LAUNCH-FE] BEFORE launch API request", {
+        endpoint: `/sequences/${sequence._id}/status`,
+        payload: { status: 'active', send_immediately: sendImmediately }
+      });
+      const result = await sequenceService.activate(sequence._id, sendImmediately);
+      console.log("[LAUNCH-FE] AFTER launch API response", result);
       toast.success('Campaign launched successfully!');
       setShowLaunchModal(false);
       navigate('/sequences');
     } catch (err: any) {
+      console.error("[LAUNCH-FE] Launch failed", err);
       toast.error(err?.response?.data?.message || 'Failed to launch campaign');
     } finally {
+      console.log("[LAUNCH-FE] Launch handler finished");
       setLaunching(false);
     }
   };
@@ -677,17 +698,15 @@ export function SequencePreviewTestPage() {
       <Toaster position="top-right" />
 
       {/* Header */}
-      <div className="max-w-[1600px] w-full mx-auto px-6 pt-6">
         <WizardHeader
           sequence={sequence}
           onBack={() => navigate('/sequences')}
           currentStepId="preview-test"
           onToggleStatus={handleToggleStatus}
         />
-      </div>
 
       {/* Top: Total Recipients + Action Buttons */}
-      <div className="max-w-[1600px] w-full mx-auto px-6 mb-4">
+      <div className="max-w-[1600px] w-full mx-auto px-6 mb-4 mt-6">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-lg font-bold text-gray-900">
@@ -727,6 +746,7 @@ export function SequencePreviewTestPage() {
           <PersonalizedPreviewCard
             contacts={contacts}
             template={template}
+            step={steps.find(s => s.type === 'email') ?? null}
             sequenceId={sequence._id}
           />
         </div>

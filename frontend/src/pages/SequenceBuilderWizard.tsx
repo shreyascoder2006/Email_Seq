@@ -9,7 +9,7 @@ import { toast, Toaster } from 'react-hot-toast';
 import { sequenceService } from '../services/sequence.service';
 import { templateService } from '../services/template.service';
 import { emailAccountService } from '../services/emailAccount.service';
-import { aiWriterService } from '../services/aiWriter.service';
+import { aiWriterService, type EmailLength } from '../services/aiWriter.service';
 import { RichTextEditor } from '../components/editor/RichTextEditor';
 import { PersonalizationDropdown } from '../components/personalization/PersonalizationDropdown';
 import type { MergeTag } from '../components/personalization/PersonalizationSidebar';
@@ -60,41 +60,47 @@ export interface WizardHeaderProps {
 export function WizardHeader({ sequence, onBack, onNext, currentStepId = 'sequence', onToggleStatus }: WizardHeaderProps) {
   const isActive = sequence.status === 'active';
 
-
-
   return (
     <div className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between shadow-sm sticky top-0 z-50">
       {/* Left: Icon, Back, Title, Toggle */}
-      <div className="flex items-center gap-4">
-        <div className="w-8 h-8 rounded bg-indigo-600 flex items-center justify-center">
+      <div className="flex items-center gap-4 flex-1 min-w-0 pr-4">
+        <div className="w-8 h-8 rounded bg-indigo-600 flex items-center justify-center flex-shrink-0">
           <Send className="w-4 h-4 text-white" />
         </div>
-        <button onClick={onBack} className="p-1 -ml-2 hover:bg-gray-100 rounded text-gray-500 transition-colors">
+        <button onClick={onBack} className="p-1 -ml-2 hover:bg-gray-100 rounded text-gray-500 transition-colors flex-shrink-0">
           <ArrowLeft className="w-4 h-4" />
         </button>
-        <h1 className="text-[15px] font-bold text-gray-900 tracking-tight">{sequence.name}</h1>
+        <h1 className="text-[15px] font-bold text-gray-900 tracking-tight truncate max-w-[300px]" title={sequence.name}>
+          {sequence.name}
+        </h1>
 
-        <div className="ml-2 flex items-center gap-2 border-l border-gray-200 pl-4 h-6">
+        <div className="ml-2 flex items-center gap-2 border-l border-gray-200 pl-4 h-6 flex-shrink-0">
           <SequenceStateToggle
             isActive={isActive}
             onToggle={onToggleStatus || (() => { })}
             disabled={!onToggleStatus}
           />
-          <span className="text-[11px] font-bold text-gray-700 uppercase tracking-wider">{isActive ? 'Active' : 'Paused'}</span>
+          <span className="text-[11px] font-bold text-gray-700 uppercase tracking-wider hidden sm:inline">
+            {isActive ? 'Active' : 'Paused'}
+          </span>
         </div>
       </div>
 
       {/* Middle: Stepper */}
-      <SequenceWorkflowStepper
-        currentStepId={currentStepId}
-        sequenceId={sequence._id}
-      />
+      <div className="flex-shrink-0">
+        <SequenceWorkflowStepper
+          currentStepId={currentStepId}
+          sequenceId={sequence._id}
+        />
+      </div>
 
       {/* Right: Next button */}
-      <div className="flex items-center gap-3">
-        <button onClick={onNext} className="flex items-center gap-1.5 px-6 py-2 rounded-lg bg-indigo-600 text-white text-[13px] font-bold hover:bg-indigo-700 transition-colors shadow-sm">
-          Next &rarr;
-        </button>
+      <div className="flex items-center gap-3 flex-1 justify-end min-w-0 pl-4">
+        {onNext && (
+          <button onClick={onNext} className="flex items-center gap-1.5 px-6 py-2 rounded-lg bg-indigo-600 text-white text-[13px] font-bold hover:bg-indigo-700 transition-colors shadow-sm whitespace-nowrap">
+            Next &rarr;
+          </button>
+        )}
       </div>
     </div>
   );
@@ -109,10 +115,12 @@ interface PhaseEditorProps {
   connections: EmailConnection[];
   integrityIssue?: StepIntegrityIssue;
   onNext: (stepData: any) => void;
+  onSave: (stepData: any) => Promise<void>;
 }
 
-function PhaseEditor({ phase, templates, selectedTemplateId, connections, integrityIssue, onNext }: PhaseEditorProps) {
+function PhaseEditor({ phase, templates, selectedTemplateId, connections, integrityIssue, onNext, onSave }: PhaseEditorProps) {
   const [activeTab, setActiveTab] = useState<EditorTab>('emailSetup');
+  const [isSaving, setIsSaving] = useState(false);
   const selectedTemplate = templates.find(t => t._id === selectedTemplateId);
   const contentTabRef = useRef<ContentTabRef>(null);
 
@@ -125,18 +133,6 @@ function PhaseEditor({ phase, templates, selectedTemplateId, connections, integr
 
   return (
     <div className="flex flex-col h-full bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-      {integrityIssue && (
-        <div className="bg-amber-50 border-b border-amber-200 px-4 py-3 flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-          <div>
-            <p className="text-sm font-bold text-amber-900">⚠️ Action Required: Missing Information</p>
-            <p className="text-sm text-amber-800 mt-1">
-              This step is missing required fields ({integrityIssue.issues.join(', ')}).
-              Defaults have been pre-filled. Click <strong>Next →</strong> below to repair and save.
-            </p>
-          </div>
-        </div>
-      )}
 
       {/* Tab bar */}
       <div className="flex items-center border-b border-gray-200 gap-8 px-6 pt-4 shrink-0 bg-white">
@@ -189,12 +185,39 @@ function PhaseEditor({ phase, templates, selectedTemplateId, connections, integr
           Save as Template
         </button>
 
-        <button id="save-next-btn" onClick={() => {
-          const data = contentTabRef.current?.getStepData() || {};
-          onNext(data);
-        }} className="flex items-center gap-2 px-6 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-700 transition-colors shadow-sm">
-          Next &rarr;
-        </button>
+        <div className="flex items-center gap-3">
+          {/* Save button — persists without navigating away */}
+          <button
+            id="save-step-btn"
+            disabled={isSaving}
+            onClick={async () => {
+              const data = contentTabRef.current?.getStepData() || {};
+              setIsSaving(true);
+              try {
+                await onSave(data);
+              } finally {
+                setIsSaving(false);
+              }
+            }}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 text-sm font-bold hover:bg-indigo-100 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isSaving ? (
+              <LoadingSpinner size={14} />
+            ) : (
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+              </svg>
+            )}
+            {isSaving ? 'Saving…' : 'Save'}
+          </button>
+
+          <button id="save-next-btn" onClick={() => {
+            const data = contentTabRef.current?.getStepData() || {};
+            onNext(data);
+          }} className="flex items-center gap-2 px-6 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-700 transition-colors shadow-sm">
+            Next &rarr;
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -244,17 +267,21 @@ const ContentTab = forwardRef<ContentTabRef, ContentTabProps>(({ phase, selected
   const [ccError, setCcError] = useState('');
   const [bccError, setBccError] = useState('');
 
-  // Sender selection state — default to connection already on the step, then first active, then first available
+  // Sender selection state
+  // Priority: first active connection > step's saved ID > first available connection
+  // This ensures the user's primary sending account is always pre-selected,
+  // even if an older step has a stale email_connection_id saved.
   const defaultConnectionId = (() => {
-    if (phase?.step?.email_connection_id) return phase.step.email_connection_id;
     const active = connections.find(c => c.status === 'active');
-    return active?._id ?? connections[0]?._id ?? '';
+    if (active) return active._id;
+    if (phase?.step?.email_connection_id) return phase.step.email_connection_id;
+    return connections[0]?._id ?? '';
   })();
   const [selectedConnectionId, setSelectedConnectionId] = useState(defaultConnectionId);
 
   // AI Generator state
   const [aiObjective, setAiObjective] = useState('First Touch');
-  const [aiLength, setAiLength] = useState('Medium (125 - 200 words)');
+  const [aiLength, setAiLength] = useState<EmailLength>('medium');
   const [aiOffering, setAiOffering] = useState('');
   const [aiAudience, setAiAudience] = useState('');
   const [aiPainPoint, setAiPainPoint] = useState('');
@@ -262,6 +289,10 @@ const ContentTab = forwardRef<ContentTabRef, ContentTabProps>(({ phase, selected
   const [aiGuidance, setAiGuidance] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [showAiBanner, setShowAiBanner] = useState(true);
+  
+  // AI Generated output state
+  const [aiGeneratedSubject, setAiGeneratedSubject] = useState<string | null>(null);
+  const [aiGeneratedBodyHtml, setAiGeneratedBodyHtml] = useState<string | null>(null);
 
   // Diagnostic: log accounts every time connections changes
   useEffect(() => {
@@ -269,8 +300,10 @@ const ContentTab = forwardRef<ContentTabRef, ContentTabProps>(({ phase, selected
   }, [connections]);
 
   // Subject / body state
-  const [subject, setSubject] = useState(selectedTemplate?.subject || phase?.step?.subject_override || '');
-  const [bodyHtml, setBodyHtml] = useState(selectedTemplate?.body_html || phase?.step?.body_html_override || '');
+  // Priority: saved step override > template default > empty string
+  // The override must win so that previously-saved edits survive remounts.
+  const [subject, setSubject] = useState(phase?.step?.subject_override || selectedTemplate?.subject || '');
+  const [bodyHtml, setBodyHtml] = useState(phase?.step?.body_html_override || selectedTemplate?.body_html || '');
 
   const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [previewData, setPreviewData] = useState<{ html: string; subject: string } | null>(null);
@@ -358,17 +391,9 @@ const ContentTab = forwardRef<ContentTabRef, ContentTabProps>(({ phase, selected
       return;
     }
 
-    const currentHtml = editorRef.current?.getHTML() || bodyHtml;
-    // Simple empty check: tip tap empty is typically '<p></p>'
-    const isEmpty = !currentHtml || currentHtml === '<p></p>' || currentHtml.trim() === '';
-
-    if (!isEmpty) {
-      if (!window.confirm("This will replace your existing email content. Are you sure you want to continue?")) {
-        return;
-      }
-    }
-
     setIsGenerating(true);
+    setAiGeneratedSubject(null);
+    setAiGeneratedBodyHtml(null);
     try {
       const generated = await aiWriterService.generateEmail({
         objective: aiObjective,
@@ -380,14 +405,25 @@ const ContentTab = forwardRef<ContentTabRef, ContentTabProps>(({ phase, selected
         guidance: aiGuidance
       });
 
-      setSubject(generated.subject);
-      setBodyHtml(generated.bodyHtml);
-      if (editorRef.current) {
-        editorRef.current.commands.setContent(generated.bodyHtml);
-      }
-      toast.success("Email generated successfully");
+      // Show preview instead of overwriting immediately
+      setAiGeneratedSubject(generated.subject);
+      setAiGeneratedBodyHtml(generated.bodyHtml);
+      toast.success("Email generated successfully! Review below.");
     } catch (err: any) {
-      toast.error(err.response?.data?.message || "AI Writer service is not configured.");
+      const status = err.response?.status;
+      if (status === 400) {
+        toast.error("Please check the AI Writer fields and try again.");
+      } else if (status === 401) {
+        toast.error("Your session has expired. Please sign in again.");
+      } else if (status === 429) {
+        toast.error("Too many generation requests. Please try again shortly.");
+      } else if (status === 502 || status === 503) {
+        toast.error("AI generation is temporarily unavailable. Please try again.");
+      } else if (!err.response) {
+        toast.error("Unable to reach the server. Please check your connection.");
+      } else {
+        toast.error("Failed to generate email. Please try again.");
+      }
     } finally {
       setIsGenerating(false);
     }
@@ -395,12 +431,14 @@ const ContentTab = forwardRef<ContentTabRef, ContentTabProps>(({ phase, selected
 
   const handleResetAi = () => {
     setAiObjective('First Touch');
-    setAiLength('Medium (125 - 200 words)');
+    setAiLength('medium');
     setAiOffering('');
     setAiAudience('');
     setAiPainPoint('');
     setAiCta('');
     setAiGuidance('');
+    setAiGeneratedSubject(null);
+    setAiGeneratedBodyHtml(null);
   };
 
   const wordCount = editorRef.current ? editorRef.current.getText().trim().split(/\s+/).filter((word: string) => word.length > 0).length : 0;
@@ -438,10 +476,10 @@ const ContentTab = forwardRef<ContentTabRef, ContentTabProps>(({ phase, selected
 
             <div>
               <label className="block text-xs font-bold text-gray-700 mb-1">Email Length <span className="text-red-500">*</span></label>
-              <select value={aiLength} onChange={e => setAiLength(e.target.value)} className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
-                <option>Short (50-100 words)</option>
-                <option>Medium (125-200 words)</option>
-                <option>Long (250-400 words)</option>
+              <select value={aiLength} onChange={e => setAiLength(e.target.value as EmailLength)} className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
+                <option value="short">Short (50-100 words)</option>
+                <option value="medium">Medium (125-200 words)</option>
+                <option value="long">Long (250-400 words)</option>
               </select>
             </div>
 
@@ -516,6 +554,50 @@ const ContentTab = forwardRef<ContentTabRef, ContentTabProps>(({ phase, selected
               placeholder="Enter template name"
               defaultValue={selectedTemplate?.name || 'Generated Template'}
             />
+          </div>
+        )}
+
+        {/* AI Generated Preview Block */}
+        {isAiMode && aiGeneratedSubject && aiGeneratedBodyHtml && (
+          <div className="bg-emerald-50/50 border border-emerald-200 rounded-xl p-5 relative mb-6 shadow-sm">
+            <h3 className="text-sm font-bold text-emerald-900 mb-3 flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-emerald-600" />
+              Generated Email Ready
+            </h3>
+            
+            <div className="bg-white border border-emerald-100 rounded-lg p-4 mb-4 shadow-sm">
+              <div className="text-sm border-b border-gray-100 pb-2 mb-3 font-medium text-gray-800">
+                <span className="text-gray-500 font-bold mr-2">Subject:</span> {aiGeneratedSubject}
+              </div>
+              <div className="prose prose-sm max-w-none text-gray-800" dangerouslySetInnerHTML={{ __html: aiGeneratedBodyHtml }} />
+            </div>
+
+            <div className="flex gap-3">
+              <button 
+                onClick={() => {
+                  setSubject(aiGeneratedSubject);
+                  setBodyHtml(aiGeneratedBodyHtml);
+                  if (editorRef.current) {
+                    editorRef.current.commands.setContent(aiGeneratedBodyHtml);
+                  }
+                  toast.success("Applied to editor!");
+                  setAiGeneratedSubject(null);
+                  setAiGeneratedBodyHtml(null);
+                }} 
+                className="px-5 py-2 bg-emerald-600 text-white text-[13px] font-bold rounded-lg hover:bg-emerald-700 transition-colors shadow-sm flex items-center gap-2"
+              >
+                <FileText className="w-4 h-4" /> Use this email
+              </button>
+              <button 
+                onClick={() => {
+                  setAiGeneratedSubject(null);
+                  setAiGeneratedBodyHtml(null);
+                }} 
+                className="px-5 py-2 bg-white border border-gray-200 text-gray-700 text-[13px] font-bold rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Discard
+              </button>
+            </div>
           </div>
         )}
 
@@ -774,22 +856,6 @@ export function SequenceSummary({ sequence }: SequenceSummaryProps) {
       <SummaryRow icon={<Calendar className="w-4 h-4 text-indigo-600" />} label="Daily Execution Cap">
         <span className="text-xs text-gray-600">{sequence.daily_sending_limit} emails per day</span>
       </SummaryRow>
-
-      <SummaryRow icon={<Users className="w-4 h-4 text-indigo-600" />} label="Phase 1 Reservation Limit">
-        <div className="text-xs text-gray-900 font-bold">30%</div>
-        <div className="text-[11px] text-gray-500 mt-0.5">Global daily cap: {sequence.daily_sending_limit}</div>
-      </SummaryRow>
-
-      {/* Info card */}
-      <div className="rounded-xl bg-[#F4F2FA] border border-indigo-100 p-4 flex gap-3">
-        <Info className="w-4 h-4 text-indigo-500 shrink-0 mt-0.5" />
-        <div>
-          <p className="text-sm font-semibold text-indigo-900 mb-1">How sending works</p>
-          <p className="text-xs text-indigo-800/80 leading-relaxed">
-            Emails will be sent within your selected window on active days. The system will automatically use the next available slot.
-          </p>
-        </div>
-      </div>
     </div>
   );
 }
@@ -873,6 +939,38 @@ export const SequenceBuilderWizard: React.FC = () => {
     }];
 
 
+  const handleSave = async (stepData: any) => {
+    if (!sequence) return;
+    try {
+      if (steps.length === 0) {
+        // Create the first step and refresh
+        await sequenceService.addStep(sequence._id, {
+          type: 'email',
+          delay_days: 0,
+          delay_hours: 0,
+          template_id: selectedTemplateId || undefined,
+          ...stepData
+        });
+      } else {
+        // Update existing step in place
+        const currentStep = phases[selectedPhaseIdx]?.step;
+        if (currentStep) {
+          await sequenceService.updateStep(sequence._id, currentStep._id, {
+            type: 'email',
+            template_id: selectedTemplateId || undefined,
+            ...stepData
+          });
+        }
+      }
+      toast.success('Step saved');
+      // Do NOT call fetchData() here — it sets isLoading=true which unmounts ContentTab
+      // and causes a remount with stale initial state. The API call already persisted the
+      // data; the editor's local state already reflects the user's edits.
+    } catch (err) {
+      toast.error('Failed to save step');
+    }
+  };
+
   const handleNext = async (stepData: any) => {
     if (!sequence) return;
 
@@ -898,7 +996,7 @@ export const SequenceBuilderWizard: React.FC = () => {
           });
         }
       }
-      navigate(`/sequences/${sequence._id}/recipients/manage`);
+      navigate(`/sequences/${sequence._id}/recipients`);
     } catch (err) {
       toast.error('Failed to save sequence step');
     } finally {
@@ -965,14 +1063,6 @@ export const SequenceBuilderWizard: React.FC = () => {
 
         {/* Main Content: Phase editor (approx 75%) */}
         <div className="flex-1 min-w-0">
-          {integrity && !integrity.is_valid && (
-            <div className="mb-4 bg-red-50 border border-red-200 rounded-lg p-3 flex items-start gap-2 shadow-sm text-sm text-red-800">
-              <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-              <div>
-                <strong>Sequence Integrity Issues:</strong> Please review flagged steps.
-              </div>
-            </div>
-          )}
           <PhaseEditor
             phase={phases[selectedPhaseIdx] ?? null}
             templates={templates}
@@ -981,6 +1071,7 @@ export const SequenceBuilderWizard: React.FC = () => {
             connections={connections}
             integrityIssue={integrity?.issues?.find(iss => iss.step_id === phases[selectedPhaseIdx]?.step?._id) || integrity?.issues?.find(iss => iss.step_id === 'global')}
             onNext={handleNext}
+            onSave={handleSave}
           />
         </div>
 

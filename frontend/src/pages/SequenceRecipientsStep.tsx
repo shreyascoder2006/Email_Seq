@@ -20,11 +20,13 @@ export function SequenceRecipientsStep() {
 
   // Embedded Import State
   const fileInputRef = React.useRef<HTMLInputElement>(null);
-  const [importStage, setImportStage] = useState<'idle' | 'uploading' | 'map' | 'review' | 'done'>('idle');
+  const [importStage, setImportStage] = useState<'idle' | 'uploading' | 'configure' | 'done'>('idle');
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<ParsePreviewResult | null>(null);
   const [allRows, setAllRows] = useState<Record<string, string>[]>([]);
   const [mappings, setMappings] = useState<FieldMapping[]>([]);
+  const [isSaving, setIsSaving] = useState(false);
+  const [listName, setListName] = useState('');
 
   const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
@@ -37,7 +39,8 @@ export function SequenceRecipientsStep() {
       setPreview(result);
       setAllRows(result.all_rows ?? []);
       setMappings(result.field_mappings);
-      setImportStage('map');
+      setListName(selectedFile.name.replace(/\.(csv|xlsx|xls)$/i, ''));
+      setImportStage('configure');
     } catch (err: any) {
       toast.error(err.response?.data?.error?.message || 'Failed to parse file');
       setImportStage('idle');
@@ -113,171 +116,81 @@ export function SequenceRecipientsStep() {
     }
   };
 
+  const handleImport = async () => {
+    if (!sequence || !file || !preview) return;
+    
+    const emailMapping = mappings.find(m => m.system_field === 'email');
+    if (!emailMapping) {
+      toast.error('Email field must be mapped.');
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      // 1. Create List
+      const result = await importService.create({
+        name: listName.trim() || file.name,
+        filename: file.name,
+        original_headers: preview.headers,
+        field_mappings: mappings,
+        rows: allRows,
+      });
+
+      // 2. Enroll Contacts
+      const enrollRes = await importService.enroll(result.import_list._id, sequence._id);
+      
+      toast.success(`Imported and enrolled ${enrollRes.enrolled} contacts successfully!`);
+      setImportStage('done');
+      fetchData(); // Refresh sequence to show updated contacts
+      
+      // 3. Auto-continue to next step
+      setTimeout(() => {
+        handleNext();
+      }, 1500);
+      
+    } catch (err: any) {
+      toast.error(err.response?.data?.error?.message || 'Import failed');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-[#F7F8FA] flex flex-col p-6">
+    <div className="min-h-screen bg-[#F7F8FA] flex flex-col">
       <Toaster position="top-right" />
 
       {/* Header Container */}
-      <div className="max-w-[1600px] w-full mx-auto">
         <WizardHeader
           sequence={sequence}
           onBack={() => navigate('/sequences')}
           currentStepId="import-recipients"
           onToggleStatus={handleToggleStatus}
         />
-      </div>
 
       {/* Body Layout */}
-      <div className="flex flex-1 max-w-[1600px] w-full mx-auto gap-6 pb-16">
+      <div className="flex flex-1 max-w-[1600px] w-full mx-auto gap-6 pb-16 pt-6 px-6">
 
         {/* Main Content (Left) */}
         <div style={{ flex: '0 0 80%' }} className="flex flex-col gap-8 min-w-0">
 
-          {/* ── 3-Circle Progress Flow (matches reference screenshot exactly) ── */}
-          <div className="flex items-start justify-center pt-10">
-            <div className="flex items-start gap-0">
-
-              {/* Step 1: Add Recipients (active — filled purple) */}
-              <div className="flex flex-col items-center" style={{ width: 120 }}>
-                <div className="w-16 h-16 rounded-full border-2 border-[#5B4CFF] bg-white flex items-center justify-center shadow-sm">
-                  <UserPlus className="w-7 h-7 text-[#5B4CFF]" strokeWidth={1.5} />
-                </div>
-                <p className="text-[13px] font-bold text-[#5B4CFF] mt-3 text-center leading-snug">Add Recipients</p>
-              </div>
-
-              {/* Dashed connector */}
-              <div className="flex-1 flex items-center" style={{ marginTop: 30, minWidth: 80 }}>
-                <div className="w-full border-t-2 border-dashed border-gray-300" />
-              </div>
-
-              {/* Step 2: Email Steps (inactive) */}
-              <div className="flex flex-col items-center" style={{ width: 120 }}>
-                <div className="w-16 h-16 rounded-full border-2 border-gray-200 bg-white flex items-center justify-center shadow-sm">
-                  <svg className="w-7 h-7 text-gray-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
-                    <polyline points="22,6 12,13 2,6" />
-                  </svg>
-                </div>
-                <p className="text-[13px] font-semibold text-gray-400 mt-3 text-center leading-snug">Email Steps</p>
-              </div>
-
-              {/* Dashed connector */}
-              <div className="flex-1 flex items-center" style={{ marginTop: 30, minWidth: 80 }}>
-                <div className="w-full border-t-2 border-dashed border-gray-300" />
-              </div>
-
-              {/* Step 3: Launch Sequence (inactive) */}
-              <div className="flex flex-col items-center" style={{ width: 120 }}>
-                <div className="w-16 h-16 rounded-full border-2 border-gray-200 bg-white flex items-center justify-center shadow-sm">
-                  <svg className="w-7 h-7 text-gray-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z" />
-                    <path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z" />
-                    <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0" />
-                    <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
-                  </svg>
-                </div>
-                <p className="text-[13px] font-semibold text-gray-400 mt-3 text-center leading-snug">Launch Sequence</p>
-              </div>
-
-            </div>
-          </div>
-
-          {/* ── 3-Card Info Row ── */}
-          <div className="flex items-center justify-center">
-            <div className="flex items-stretch gap-4">
-
-              {/* Card 1 */}
-              <div className="w-[220px] flex items-start gap-3 p-4 rounded-2xl border border-gray-200 bg-white shadow-sm">
-                <div className="w-10 h-10 rounded-xl bg-[#F4F2FA] flex items-center justify-center shrink-0">
-                  <svg className="w-5 h-5 text-[#5B4CFF]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <rect x="3" y="3" width="7" height="4" rx="1" /><rect x="3" y="10" width="7" height="11" rx="1" />
-                    <rect x="13" y="3" width="8" height="11" rx="1" /><rect x="13" y="17" width="8" height="4" rx="1" />
-                  </svg>
-                </div>
-                <div>
-                  <h4 className="text-[13px] font-bold text-gray-900">Import Contacts</h4>
-                  <p className="text-[11.5px] text-gray-500 mt-0.5 leading-snug">Upload a CSV file with your prospect list.</p>
-                </div>
-              </div>
-
-              <ArrowRight className="w-5 h-5 text-[#5B4CFF] self-center shrink-0" />
-
-              {/* Card 2 */}
-              <div className="w-[220px] flex items-start gap-3 p-4 rounded-2xl border-2 border-[#5B4CFF]/20 bg-[#F7F6FF] shadow-sm">
-                <div className="w-10 h-10 rounded-xl bg-white border border-indigo-100 flex items-center justify-center shrink-0 shadow-sm">
-                  <Search className="w-5 h-5 text-[#5B4CFF]" />
-                </div>
-                <div>
-                  <h4 className="text-[13px] font-bold text-[#5B4CFF]">Choose Recipients</h4>
-                  <p className="text-[11.5px] text-indigo-500/70 mt-0.5 leading-snug">Select contacts from your saved searches.</p>
-                </div>
-              </div>
-
-              <ArrowRight className="w-5 h-5 text-[#5B4CFF] self-center shrink-0" />
-
-              {/* Card 3 */}
-              <div className="w-[220px] flex items-start gap-3 p-4 rounded-2xl border border-emerald-200 bg-[#F0FDF4] shadow-sm">
-                <div className="w-10 h-10 rounded-xl bg-white border border-emerald-100 flex items-center justify-center shrink-0 shadow-sm">
-                  <Users className="w-5 h-5 text-emerald-600" />
-                </div>
-                <div>
-                  <h4 className="text-[13px] font-bold text-emerald-800">Ready to Launch</h4>
-                  <p className="text-[11.5px] text-emerald-700/70 mt-0.5 leading-snug">Proceed to set up your email steps and launch sequence.</p>
-                </div>
-              </div>
-
-            </div>
-          </div>
-
-          {/* Center Call to Action Area */}
+          {/* Idle State - Clean Upload UI */}
           {importStage === 'idle' && (
-            <div className="flex flex-col items-center mt-12 mb-8">
-              <h2 className="text-[24px] font-bold text-gray-900 mb-6">Let's add recipients to your sequence</h2>
-
-              <div className="w-full max-w-[480px] relative group">
-                <button
-                  className="w-full h-12 flex items-center justify-between px-6 rounded-xl text-white font-bold text-[15px] shadow-md transition-all z-20 relative hover:shadow-lg"
-                  style={{ background: 'linear-gradient(135deg, #5B4CFF, #6C63FF)' }}
-                >
-                  <div className="flex items-center gap-2">
-                    <span>+ Add Recipients</span>
-                  </div>
-                  <ChevronDown className="w-5 h-5" />
-                </button>
-
-                {/* Dropdown Card */}
-                <div className="absolute top-14 left-0 w-full bg-white rounded-2xl border border-gray-200 shadow-xl p-2 z-10">
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    className="w-full flex items-start gap-4 p-4 hover:bg-gray-50 rounded-xl transition-colors text-left"
-                  >
-                    <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-[#F4F2FA] shrink-0">
-                      <UserPlus className="w-5 h-5 text-[#5B4CFF]" />
-                    </div>
-                    <div>
-                      <h4 className="text-[14px] font-bold text-gray-900 mb-0.5">Import from CSV</h4>
-                      <p className="text-[12px] text-gray-500">Upload a CSV file to add recipients.</p>
-                    </div>
-                  </button>
-
-                  <div className="h-px bg-gray-100 mx-4 my-1" />
-
-                  <button
-                    className="w-full flex items-start gap-4 p-4 hover:bg-gray-50 rounded-xl transition-colors text-left"
-                  >
-                    <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-gray-50 border border-gray-200 shrink-0">
-                      <Search className="w-5 h-5 text-gray-400" />
-                    </div>
-                    <div>
-                      <h4 className="text-[14px] font-bold text-gray-900 mb-0.5 flex items-center gap-2">
-                        Add from Saved Searches
-                        <span className="text-[10px] font-bold bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-md uppercase tracking-wider">Coming soon</span>
-                      </h4>
-                      <p className="text-[12px] text-gray-500">Choose from your saved prospect searches.</p>
-                    </div>
-                  </button>
-                </div>
+            <div className="flex flex-col items-center justify-center mt-12 bg-white rounded-2xl border border-gray-200 p-12 shadow-sm">
+              <div className="w-16 h-16 rounded-2xl bg-indigo-50 flex items-center justify-center mb-6">
+                <Users className="w-8 h-8 text-indigo-600" />
               </div>
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">Import Contacts</h2>
+              <p className="text-gray-500 mb-8 text-center max-w-md">
+                Upload a CSV file to add recipients to <strong>{sequence.name}</strong>.
+              </p>
+              
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="px-8 py-3 bg-indigo-600 text-white font-bold text-[15px] rounded-xl hover:bg-indigo-700 transition-colors shadow-sm flex items-center gap-2"
+              >
+                <UserPlus className="w-5 h-5" />
+                Select CSV File
+              </button>
 
               {/* Hidden file input */}
               <input
@@ -298,37 +211,99 @@ export function SequenceRecipientsStep() {
             </div>
           )}
 
-          {/* Map Stage */}
-          {importStage === 'map' && preview && file && (
-            <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-200">
-              <h2 className="text-xl font-bold text-gray-900 mb-6">Map Columns</h2>
-              <MapStage
-                file={file}
-                preview={preview}
-                mappings={mappings}
-                onMappingsChange={setMappings}
-                onNext={() => setImportStage('review')}
-                onBack={() => { setImportStage('idle'); setFile(null); setPreview(null); }}
-              />
-            </div>
-          )}
+          {/* Configure Stage (Unified Mapping + Settings) */}
+          {importStage === 'configure' && preview && file && (
+            <div className="space-y-6">
+              
+              <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
+                <div className="flex justify-between items-center mb-6">
+                  <h2 className="text-xl font-bold text-gray-900">Map Columns</h2>
+                  <button 
+                    onClick={() => fileInputRef.current?.click()}
+                    className="text-sm font-semibold text-indigo-600 hover:text-indigo-700 bg-indigo-50 px-3 py-1.5 rounded-lg transition-colors"
+                  >
+                    Replace File
+                  </button>
+                  {/* Hidden file input for replace */}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".csv,.xlsx,.xls"
+                    className="hidden"
+                    onChange={handleFileSelected}
+                  />
+                </div>
+                
+                <MapStage
+                  file={file}
+                  preview={preview}
+                  mappings={mappings}
+                  onMappingsChange={setMappings}
+                  onNext={() => {}}
+                  onBack={() => {}}
+                  hideActions={true}
+                />
+              </div>
 
-          {/* Review Stage */}
-          {importStage === 'review' && preview && file && (
-            <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-200">
-              <h2 className="text-xl font-bold text-gray-900 mb-6">Review & Import</h2>
-              <ReviewStage
-                file={file}
-                preview={preview}
-                mappings={mappings}
-                allRows={allRows}
-                autoEnrollSequenceId={sequence._id}
-                onBack={() => setImportStage('map')}
-                onImported={() => {
-                  setImportStage('done');
-                  fetchData(); // Refresh sequence to show updated contacts
-                }}
-              />
+              {/* Import Settings & Summary */}
+              <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200 flex flex-col gap-6">
+                <div>
+                  <h3 className="text-sm font-bold text-gray-900 mb-4">Import Settings</h3>
+                  <div className="max-w-md space-y-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-700 mb-1.5">List Name</label>
+                      <input 
+                        type="text" 
+                        value={listName}
+                        onChange={(e) => setListName(e.target.value)}
+                        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        placeholder="e.g. Q3 Outreach List"
+                      />
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <div className="mt-0.5">
+                        <Check className="w-4 h-4 text-emerald-500" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-gray-900">Skip Duplicates</p>
+                        <p className="text-xs text-gray-500">Automatically bypass contacts already in this sequence.</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-gray-50 rounded-xl p-4 flex items-center justify-between border border-gray-100">
+                  <div className="flex gap-6 text-sm">
+                    <div>
+                      <span className="text-gray-500 font-medium">Total Rows:</span>
+                      <span className="ml-2 font-bold text-gray-900">{preview.total_rows}</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-500 font-medium">Mapped Fields:</span>
+                      <span className="ml-2 font-bold text-gray-900">{mappings.filter(m => m.system_field !== '__custom__').length}</span>
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-center gap-3">
+                    <button 
+                      onClick={() => { setImportStage('idle'); setFile(null); setPreview(null); }}
+                      className="px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                      disabled={isSaving}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleImport}
+                      disabled={isSaving || !mappings.some(m => m.system_field === 'email')}
+                      className="flex items-center gap-2 px-6 py-2 bg-indigo-600 text-white text-sm font-bold rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors shadow-sm"
+                    >
+                      {isSaving ? <LoadingSpinner size={16} /> : null}
+                      {isSaving ? 'Importing...' : `Import ${preview.total_rows} Contacts`}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
             </div>
           )}
 
@@ -339,13 +314,10 @@ export function SequenceRecipientsStep() {
                 <Check className="w-8 h-8 text-green-600" />
               </div>
               <h2 className="text-2xl font-bold text-gray-900 mb-2">Import Complete!</h2>
-              <p className="text-gray-500 mb-6 text-center max-w-md">Your contacts have been successfully imported and enrolled into the sequence.</p>
-              <button
-                onClick={() => setImportStage('idle')}
-                className="px-6 py-2 bg-gray-100 text-gray-700 font-semibold rounded-lg hover:bg-gray-200 transition-colors"
-              >
-                Import More Contacts
-              </button>
+              <p className="text-gray-500 mb-6 text-center max-w-md">
+                Contacts successfully imported and enrolled. Moving to the next step...
+              </p>
+              <LoadingSpinner size={24} />
             </div>
           )}
         </div>

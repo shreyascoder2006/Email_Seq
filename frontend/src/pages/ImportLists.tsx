@@ -12,7 +12,11 @@ const SYSTEM_FIELD_OPTIONS = [
   { value: 'email',      label: 'Email *',     is_system: true },
   { value: 'first_name', label: 'First Name',  is_system: true },
   { value: 'last_name',  label: 'Last Name',   is_system: true },
+  { value: 'full_name',  label: 'Full Name',   is_system: false },
   { value: 'company',    label: 'Company',     is_system: true },
+  { value: 'title',      label: 'Job Title',   is_system: false },
+  { value: 'city',       label: 'City',        is_system: false },
+  { value: 'phone',      label: 'Phone',       is_system: false },
   { value: '__custom__', label: '— Custom Field —', is_system: false },
 ];
 
@@ -79,7 +83,7 @@ function UploadStage({ onParsed }: { onParsed: (file: File, result: ParsePreview
 
 // ─── Stage 2: Map Fields ───────────────────────────────────────────
 export function MapStage({
-  file, preview, mappings, onMappingsChange, onNext, onBack,
+  file, preview, mappings, onMappingsChange, onNext, onBack, hideActions
 }: {
   file: File;
   preview: ParsePreviewResult;
@@ -87,10 +91,14 @@ export function MapStage({
   onMappingsChange: (m: FieldMapping[]) => void;
   onNext: () => void;
   onBack: () => void;
+  hideActions?: boolean;
 }) {
+  const [manuallyChanged, setManuallyChanged] = useState<Set<number>>(new Set());
+  const [showPreview, setShowPreview] = useState(false);
   const hasEmail = mappings.some(m => m.system_field === 'email');
 
   const updateMapping = (idx: number, systemField: string) => {
+    setManuallyChanged(prev => new Set(prev).add(idx));
     const updated = mappings.map((m, i) => {
       if (i !== idx) return m;
       const sysOpt = SYSTEM_FIELD_OPTIONS.find(o => o.value === systemField);
@@ -125,25 +133,28 @@ export function MapStage({
       <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
         <div className="grid grid-cols-12 bg-gray-50 px-4 py-3 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider">
           <div className="col-span-3">CSV Column</div>
-          <div className="col-span-3">Sample Values</div>
-          <div className="col-span-3">→ System Field</div>
+          <div className="col-span-3">Sample Data</div>
+          <div className="col-span-3">Map To</div>
           <div className="col-span-3">Merge Tag</div>
         </div>
         <div className="divide-y divide-gray-100">
           {mappings.map((m, idx) => {
-            const samples = preview.preview_rows.slice(0, 3).map(r => r[m.csv_column]).filter(Boolean);
+            const rawSamples = preview.preview_rows.map(r => r[m.csv_column]).filter(Boolean);
+            const samples = Array.from(new Set(rawSamples)).slice(0, 2); // Unique, max 2
             const currentOpt = SYSTEM_FIELD_OPTIONS.find(o => o.value === m.system_field) ? m.system_field : (m.is_system ? m.system_field : '__custom__');
+            const isAutoDetected = m.is_system && !manuallyChanged.has(idx);
+
             return (
-              <div key={idx} className="grid grid-cols-12 items-center px-4 py-3 hover:bg-gray-50 transition-colors">
-                <div className="col-span-3">
-                  <span className="font-mono text-sm font-medium text-gray-800 bg-gray-100 px-2 py-0.5 rounded">{m.csv_column}</span>
+              <div key={idx} className="grid grid-cols-12 items-start px-4 py-3 hover:bg-gray-50 transition-colors">
+                <div className="col-span-3 py-1">
+                  <span className="font-mono text-sm font-medium text-gray-800 bg-gray-100 px-2 py-0.5 rounded break-all">{m.csv_column}</span>
                 </div>
-                <div className="col-span-3 space-y-0.5">
+                <div className="col-span-3 space-y-1 py-1 pr-4">
                   {samples.length ? samples.map((s, i) => (
-                    <p key={i} className="text-xs text-gray-500 truncate">{s}</p>
-                  )) : <span className="text-xs text-gray-400 italic">—</span>}
+                    <p key={i} className="text-sm text-gray-600 truncate">{s}</p>
+                  )) : <span className="text-sm text-gray-400 italic">—</span>}
                 </div>
-                <div className="col-span-3">
+                <div className="col-span-3 pr-4">
                   <select
                     value={currentOpt}
                     onChange={(e) => updateMapping(idx, e.target.value)}
@@ -152,8 +163,13 @@ export function MapStage({
                     {SYSTEM_FIELD_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                   </select>
                 </div>
-                <div className="col-span-3">
-                  <code className="text-xs font-mono text-indigo-600 bg-indigo-50 px-2 py-1 rounded">{m.merge_tag}</code>
+                <div className="col-span-3 py-1 flex flex-col items-start gap-1">
+                  <code className="text-xs font-mono text-indigo-600 bg-indigo-50 px-2 py-1 rounded break-all">{m.merge_tag}</code>
+                  {isAutoDetected && (
+                    <span className="text-[11px] font-medium text-green-600 flex items-center gap-1">
+                      <CheckCircle className="w-3 h-3" /> Auto-detected
+                    </span>
+                  )}
                 </div>
               </div>
             );
@@ -163,31 +179,43 @@ export function MapStage({
 
       {/* Preview table */}
       {preview.preview_rows.length > 0 && (
-        <div>
-          <h4 className="text-sm font-semibold text-gray-700 mb-2">Data Preview (first 5 rows)</h4>
-          <div className="border border-gray-200 rounded-xl overflow-x-auto">
-            <table className="min-w-full text-xs divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>{preview.headers.map(h => <th key={h} className="px-3 py-2 text-left font-semibold text-gray-500 uppercase tracking-wide">{h}</th>)}</tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {preview.preview_rows.map((row, i) => (
-                  <tr key={i} className="hover:bg-gray-50">
-                    {preview.headers.map(h => <td key={h} className="px-3 py-2 text-gray-700 truncate max-w-[150px]">{row[h] || '—'}</td>)}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        <div className="border border-gray-200 rounded-xl overflow-hidden bg-white">
+          <button 
+            onClick={() => setShowPreview(!showPreview)}
+            className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors text-sm font-semibold text-gray-700"
+          >
+            <span>Preview CSV data</span>
+            <ChevronDown className={`w-4 h-4 transition-transform ${showPreview ? 'rotate-180' : ''}`} />
+          </button>
+          
+          {showPreview && (
+            <div className="overflow-x-auto border-t border-gray-200">
+              <table className="min-w-full text-xs divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>{preview.headers.map(h => <th key={h} className="px-3 py-2 text-left font-semibold text-gray-500 uppercase tracking-wide">{h}</th>)}</tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {preview.preview_rows.map((row, i) => (
+                    <tr key={i} className="hover:bg-gray-50">
+                      {preview.headers.map(h => <td key={h} className="px-3 py-2 text-gray-700 truncate max-w-[150px]">{row[h] || '—'}</td>)}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
-      <div className="flex justify-between pt-2">
-        <Button variant="outline" onClick={onBack} icon={<ArrowLeft className="w-4 h-4" />}>Back</Button>
-        <Button onClick={onNext} disabled={!hasEmail} icon={<ArrowRight className="w-4 h-4" />} iconPosition="right">
-          Review & Import
-        </Button>
-      </div>
+      {/* When used standalone in ImportLists page */}
+      {!hideActions && (
+        <div className="flex justify-between pt-2">
+          <Button variant="outline" onClick={onBack} icon={<ArrowLeft className="w-4 h-4" />}>Back</Button>
+          <Button onClick={onNext} disabled={!hasEmail} icon={<ArrowRight className="w-4 h-4" />} iconPosition="right">
+            Review & Import
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
