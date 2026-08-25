@@ -26,7 +26,7 @@ import {
   releaseSchedulerLock,
   recordSchedulerTick,
 } from './infraState';
-import { RecoveryEngine, setRecoveryEngine } from './recoveryEngine';
+import { WorkerWatchdog, setWorkerWatchdog } from './workerWatchdog';
 import {
   calculateNextValidSlot,
   toSequenceLocalTime,
@@ -205,7 +205,7 @@ export async function runScheduler(_job?: Job): Promise<void> {
 }
 
 // ─── Reusable worker lifecycle listener attachment ─────────────────
-// Extracted so the RecoveryEngine can re-attach listeners after
+// Extracted so the WorkerWatchdog can re-attach listeners after
 // recreating a Worker instance without duplicating code.
 function attachWorkerListeners(worker: Worker): void {
   worker.on('ready', () => {
@@ -325,10 +325,10 @@ export function startScheduler(): { schedulerQueue: Queue } | null {
       logger.error('[SCHEDULER] Failed to register repeatable job', { error: err.message });
     });
 
-    // ── Recovery Engine + Watchdog ───────────────────────────────────
+    // ── Worker Self-Healing Watchdog ─────────────────────────────────
     // Replaces the old ad-hoc setInterval watchdog.
-    // The engine diagnoses root cause before applying any recovery action.
-    const engine = new RecoveryEngine({
+    // The watchdog diagnoses root cause before applying any healing action.
+    const engine = new WorkerWatchdog({
       getSchedulerWorker: () => schedulerWorker,
       getSchedulerQueue:  () => schedulerQueue,
       recreateSchedulerWorker: async () => {
@@ -340,11 +340,11 @@ export function startScheduler(): { schedulerQueue: Queue } | null {
           { connection: freshConn, concurrency: 1, lockDuration: 60_000 }
         );
         attachWorkerListeners(schedulerWorker);
-        logger.info('[RECOVERY] Fresh Scheduler Worker created');
+        logger.info('[WATCHDOG] Fresh Scheduler Worker created');
       },
       schedIntervalMs: SCHEDULER_INTERVAL * 60 * 1000,
     });
-    setRecoveryEngine(engine);
+    setWorkerWatchdog(engine);
     engine.startWatchdog();
 
     logger.info('✅ Scheduler started');
@@ -362,9 +362,9 @@ export function startScheduler(): { schedulerQueue: Queue } | null {
 
 // ─── Graceful shutdown ────────────────────────────────────────────
 export async function stopScheduler(): Promise<void> {
-  // Stop the watchdog first to prevent new recovery ticks
-  const { getRecoveryEngine } = await import('./recoveryEngine');
-  getRecoveryEngine()?.stopWatchdog();
+  // Stop the watchdog first to prevent new healing ticks
+  const { getWorkerWatchdog } = await import('./workerWatchdog');
+  getWorkerWatchdog()?.stopWatchdog();
 
   // Workers must close before QueueEvents (they emit events while closing)
   await Promise.allSettled([schedulerWorker?.close()]);

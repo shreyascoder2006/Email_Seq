@@ -16,7 +16,7 @@ import Redis from 'ioredis';
 import { redisClient, redisSubscriber, REDIS_HOST, REDIS_PORT } from '../config/redis';
 import { emailQueue, getWorkerHealth } from '../queues/emailQueue';
 import { getSchedulerQueue, getSchedulerHealth } from '../queues/schedulerQueue';
-import { getRecoveryEngine } from '../queues/recoveryEngine';
+import { getWorkerWatchdog } from '../queues/workerWatchdog';
 import logger from '../config/logger';
 
 const router = Router();
@@ -59,12 +59,12 @@ router.get('/', async (_req: Request, res: Response) => {
   const workerHealth = getWorkerHealth();
   const schedulerHealth = getSchedulerHealth();
 
-  // 4. Recovery engine diagnostics (if Redis is up enough to query)
-  let recoveryDiag: Record<string, unknown> | null = null;
+  // 4. Worker watchdog diagnostics (if Redis is up enough to query)
+  let watchdogDiag: Record<string, unknown> | null = null;
   try {
-    const engine = getRecoveryEngine();
-    if (engine && pingMs !== null) {
-      recoveryDiag = await engine.getDiagnosticReport() as any;
+    const watchdog = getWorkerWatchdog();
+    if (watchdog && pingMs !== null) {
+      watchdogDiag = await watchdog.getDiagnosticReport() as any;
     }
   } catch { /* ignore */ }
 
@@ -141,7 +141,8 @@ router.get('/', async (_req: Request, res: Response) => {
       },
     },
 
-    recoveryEngine: recoveryDiag,
+    workerWatchdog: watchdogDiag,
+    recoveryEngine: watchdogDiag,
   });
 });
 

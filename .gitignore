@@ -7,6 +7,7 @@ node_modules/
 dist/
 build/
 out/
+dist-test/
 
 # ─── Environment ──────────────────────────────────────────────────
 .env
@@ -48,6 +49,8 @@ coverage/
 tmp/
 temp/
 scratch/
+eslint-output.*
+test-bug.mjs
 *.rdb
 dump.rdb
 *.tar.gz

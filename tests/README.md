@@ -103,7 +103,7 @@ Located in `tests/k6/scenarios/07_race_conditions.js` and `08_more_race_conditio
 - **Scenarios:** Dual sequence activate, concurrent reschedule overlapping with worker ticks.
 
 ### 3. Chaos Engineering (Node.js)
-Located in `tests/chaos/`. Validates auto-recovery algorithms (`RecoveryEngine`).
+Located in `tests/chaos/`. Validates auto-recovery and self-healing watchdog algorithms (`WorkerWatchdog`).
 - **PASS Criteria:** System transitions to `DEGRADED`, watchdog restarts/repairs queue, and transitions back to `HEALTHY`.
 - **Scenarios:** Redis wipe, backend process crash, MongoDB network drop, SMTP revocation.
 

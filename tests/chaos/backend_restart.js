@@ -17,7 +17,7 @@
  * Architecture Context:
  *   - Backend restart does NOT kill BullMQ workers (they're in-process)
  *   - On restart: server.ts re-initializes Redis connection, workers restart
- *   - The RecoveryEngine watchdog fires on startup and rebuilds if needed
+ *   - The WorkerWatchdog fires on startup and rebuilds if needed
  *   - sending_locked=true contacts are safely unlocked by the next tick
  *
  * Test Strategy:

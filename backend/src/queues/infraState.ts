@@ -23,7 +23,7 @@ import os from 'os';
 const NS = 'esm';
 const HEARTBEAT_TTL_S  = 60;   // Keys expire after 60 s if not refreshed
 const LOCK_TTL_MS      = 55_000; // Distributed lock TTL (< scheduler interval)
-const RECOVERY_TTL_S   = 3600;  // Reset recovery count after 1 hour
+const WATCHDOG_TTL_S   = 3600;  // Reset watchdog attempts after 1 hour
 
 // Unique ID for this process instance (used in distributed lock)
 export const INSTANCE_ID = `${os.hostname()}-${process.pid}-${uuidv4().slice(0, 8)}`;
@@ -173,20 +173,20 @@ export async function getLastSchedulerTick(): Promise<string | null> {
   }
 }
 
-// ─── Recovery Count ────────────────────────────────────────────────
+// ─── Watchdog Attempts ───────────────────────────────────────────────
 
 /**
- * Increment the scheduler recovery attempt counter.
- * Counter resets automatically after RECOVERY_TTL_S seconds (1 hour).
+ * Increment the scheduler watchdog attempt counter.
+ * Counter resets automatically after WATCHDOG_TTL_S seconds (1 hour).
  * Returns the new count.
  */
-export async function incrementRecoveryCount(): Promise<number> {
+export async function incrementWatchdogAttempts(): Promise<number> {
   try {
-    const key = `${NS}:scheduler:recovery_count`;
+    const key = `${NS}:scheduler:watchdog_attempts`;
     const count = await redisClient.incr(key);
     if (count === 1) {
       // Set TTL only on first increment (so it resets after 1 hour of quiet)
-      await redisClient.expire(key, RECOVERY_TTL_S);
+      await redisClient.expire(key, WATCHDOG_TTL_S);
     }
     return count;
   } catch {
@@ -195,11 +195,11 @@ export async function incrementRecoveryCount(): Promise<number> {
 }
 
 /**
- * Get the current recovery attempt count.
+ * Get the current watchdog attempt count.
  */
-export async function getRecoveryCount(): Promise<number> {
+export async function getWatchdogAttempts(): Promise<number> {
   try {
-    const val = await redisClient.get(`${NS}:scheduler:recovery_count`);
+    const val = await redisClient.get(`${NS}:scheduler:watchdog_attempts`);
     return val ? parseInt(val, 10) : 0;
   } catch {
     return 0;

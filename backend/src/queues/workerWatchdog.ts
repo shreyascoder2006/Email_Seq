@@ -1,21 +1,21 @@
 /**
- * src/queues/recoveryEngine.ts
+ * src/queues/workerWatchdog.ts
  *
- * Root-cause diagnosis and automatic recovery for BullMQ workers.
+ * Root-cause diagnosis and worker self-healing watchdog for BullMQ workers.
  *
  * Architecture decision: The watchdog runs inside the process and monitors
  * local Worker instances. In a multi-instance deployment, each process has
  * its own watchdog. This is correct — each process is responsible for
- * recovering its own Worker instances. The distributed lock in runScheduler()
+ * watchdog monitoring and healing of its own Worker instances. The distributed lock in runScheduler()
  * prevents duplicate processing regardless of how many instances run.
  *
- * Recovery strategy (sequential, stops at first successful fix):
+ * Watchdog self-healing strategy (sequential, stops at first successful fix):
  *   1. Redis down          → log, wait — cannot recover from app level
  *   2. Worker paused       → worker.resume()
  *   3. Worker closed/null  → recreate Worker with fresh connection
  *   4. Repeatable job gone → re-register it
  *   5. All OK but stale    → force immediate tick
- *   6. > MAX_RECOVERY_ATTEMPTS in 1h → set UNHEALTHY, stop trying
+ *   6. > MAX_WATCHDOG_ATTEMPTS in 1h → set UNHEALTHY, stop trying
  */
 
 import logger from '../config/logger';
@@ -24,14 +24,13 @@ import { env } from '../config/env';
 import {
   getHeartbeatAgeMs,
   getLastSchedulerTick,
-  incrementRecoveryCount,
-  getRecoveryCount,
+  incrementWatchdogAttempts,
+  getWatchdogAttempts,
   setInfraStatus,
-  publishHeartbeat,
 } from './infraState';
 
 // ─── Types ─────────────────────────────────────────────────────────
-export type RecoveryReason =
+export type WatchdogVerdict =
   | 'redis_down'
   | 'worker_paused'
   | 'worker_closed'
@@ -39,7 +38,7 @@ export type RecoveryReason =
   | 'repeatable_job_missing'
   | 'heartbeat_stale'
   | 'healthy'
-  | 'max_recovery_exceeded';
+  | 'max_attempts_exceeded';
 
 export interface DiagnosticReport {
   redis:          { healthy: boolean; pingMs: number | null };
@@ -52,23 +51,23 @@ export interface DiagnosticReport {
   };
   repeatableJob:  { exists: boolean; nextRun: string | null };
   lastTickAgeMs:  number;
-  recoveryCount:  number;
-  verdict:        RecoveryReason;
+  watchdogAttempts: number;
+  verdict:        WatchdogVerdict;
 }
 
-export interface RecoveryResult {
-  action:  RecoveryReason;
+export interface WatchdogAction {
+  action:  WatchdogVerdict;
   success: boolean;
   message: string;
 }
 
 // ─── Constants ─────────────────────────────────────────────────────
-const HEARTBEAT_STALE_MS   = 60_000;   // DEGRADED if worker silent > 60s
-const TICK_STALE_MS        = 15 * 60_000; // 15 min — 3× the default 5-min interval
-const MAX_RECOVERY_ATTEMPTS = 5;        // After 5 failures in 1h → UNHEALTHY
+const HEARTBEAT_STALE_MS    = 60_000;   // DEGRADED if worker silent > 60s
+const TICK_STALE_MS         = 15 * 60_000; // 15 min — 3× the default 5-min interval
+const MAX_WATCHDOG_ATTEMPTS = 5;        // After 5 failures in 1h → UNHEALTHY
 
-// ─── Recovery Engine ───────────────────────────────────────────────
-export class RecoveryEngine {
+// ─── Worker Self-Healing Watchdog ───────────────────────────────────
+export class WorkerWatchdog {
   private watchdogTimer: ReturnType<typeof setInterval> | null = null;
   private redisOfflineSince: number | null = null;
 
@@ -134,13 +133,13 @@ export class RecoveryEngine {
       ? Date.now() - new Date(lastTickStr).getTime()
       : Infinity;
 
-    // 5. Recovery count
-    const recoveryCount = await getRecoveryCount();
+    // 5. Watchdog attempt count
+    const watchdogAttempts = await getWatchdogAttempts();
 
     // 6. Verdict
-    let verdict: RecoveryReason = 'healthy';
-    if (recoveryCount >= MAX_RECOVERY_ATTEMPTS) {
-      verdict = 'max_recovery_exceeded';
+    let verdict: WatchdogVerdict = 'healthy';
+    if (watchdogAttempts >= MAX_WATCHDOG_ATTEMPTS) {
+      verdict = 'max_attempts_exceeded';
     } else if (!redisHealthy) {
       verdict = 'redis_down';
     } else if (!worker) {
@@ -166,38 +165,38 @@ export class RecoveryEngine {
       },
       repeatableJob:  { exists: repeatableExists, nextRun },
       lastTickAgeMs:  lastTickAgeMs === Infinity ? -1 : lastTickAgeMs,
-      recoveryCount,
+      watchdogAttempts,
       verdict,
     };
   }
 
-  // ─── Recovery ────────────────────────────────────────────────────
+  // ─── Self-Healing ────────────────────────────────────────────────
 
-  async recoverScheduler(): Promise<RecoveryResult> {
+  async healScheduler(): Promise<WatchdogAction> {
     const report = await this.runDiagnostics();
 
-    logger.warn('[RECOVERY] Scheduler stall detected — running diagnosis', {
-      verdict:        report.verdict,
-      recoveryCount:  report.recoveryCount,
-      lastTickAgeMs:  report.lastTickAgeMs,
-      heartbeatAgeMs: report.schedulerWorker.heartbeatAgeMs,
+    logger.warn('[WATCHDOG] Scheduler stall detected — running diagnosis', {
+      verdict:          report.verdict,
+      watchdogAttempts: report.watchdogAttempts,
+      lastTickAgeMs:    report.lastTickAgeMs,
+      heartbeatAgeMs:   report.schedulerWorker.heartbeatAgeMs,
     });
 
-    if (report.verdict === 'max_recovery_exceeded') {
-      logger.error('[RECOVERY] Max recovery attempts exceeded — entering UNHEALTHY mode', {
-        recoveryCount: report.recoveryCount,
+    if (report.verdict === 'max_attempts_exceeded') {
+      logger.error('[WATCHDOG] Max healing attempts exceeded — entering UNHEALTHY mode', {
+        watchdogAttempts: report.watchdogAttempts,
       });
       await setInfraStatus('UNHEALTHY');
-      return { action: 'max_recovery_exceeded', success: false, message: 'Max recovery attempts reached. Manual intervention required.' };
+      return { action: 'max_attempts_exceeded', success: false, message: 'Max healing attempts reached. Manual intervention required.' };
     }
 
     if (report.verdict === 'healthy') {
-      return { action: 'healthy', success: true, message: 'Scheduler is healthy — no recovery needed.' };
+      return { action: 'healthy', success: true, message: 'Scheduler is healthy — no action needed.' };
     }
 
-    const count = await incrementRecoveryCount();
-    logger.warn(`[RECOVERY] Recovery attempt #${count}`, { verdict: report.verdict });
-    await setInfraStatus(count >= MAX_RECOVERY_ATTEMPTS ? 'UNHEALTHY' : 'DEGRADED');
+    const count = await incrementWatchdogAttempts();
+    logger.warn(`[WATCHDOG] Healing attempt #${count}`, { verdict: report.verdict });
+    await setInfraStatus(count >= MAX_WATCHDOG_ATTEMPTS ? 'UNHEALTHY' : 'DEGRADED');
 
     try {
       switch (report.verdict) {
@@ -206,24 +205,24 @@ export class RecoveryEngine {
           const offlineDurationMs = this.redisOfflineSince ? Date.now() - this.redisOfflineSince : 0;
           
           if (offlineDurationMs > maxOfflineMs) {
-            logger.error(`[RECOVERY] Redis has been offline for ${Math.round(offlineDurationMs / 1000)}s (exceeds ${maxOfflineMs}ms). Restarting process to trigger fresh recovery.`);
+            logger.error(`[WATCHDOG] Redis has been offline for ${Math.round(offlineDurationMs / 1000)}s (exceeds ${maxOfflineMs}ms). Restarting process to trigger fresh recovery.`);
             process.exit(1);
           }
           
-          logger.warn(`[RECOVERY] Redis is down (offline for ${Math.round(offlineDurationMs / 1000)}s) — cannot recover from app level. Waiting for reconnect.`);
-          return { action: 'redis_down', success: false, message: 'Redis unavailable. Recovery deferred until Redis reconnects.' };
+          logger.warn(`[WATCHDOG] Redis is down (offline for ${Math.round(offlineDurationMs / 1000)}s) — cannot recover from app level. Waiting for reconnect.`);
+          return { action: 'redis_down', success: false, message: 'Redis unavailable. Healing deferred until Redis reconnects.' };
 
         case 'worker_paused': {
           const worker = this.getSchedulerWorker();
           if (worker) await worker.resume();
-          logger.info('[RECOVERY] Scheduler Worker resumed from paused state.');
+          logger.info('[WATCHDOG] Scheduler Worker resumed from paused state.');
           return { action: 'worker_paused', success: true, message: 'Worker resumed.' };
         }
 
         case 'worker_null':
         case 'worker_closed': {
           await this.recreateSchedulerWorker();
-          logger.info('[RECOVERY] Scheduler Worker recreated with fresh Redis connection.');
+          logger.info('[WATCHDOG] Scheduler Worker recreated with fresh Redis connection.');
           return { action: report.verdict, success: true, message: 'Worker recreated.' };
         }
 
@@ -235,7 +234,7 @@ export class RecoveryEngine {
               removeOnComplete: 5,
               removeOnFail:     5,
             });
-            logger.info('[RECOVERY] Repeatable scheduler job re-registered.');
+            logger.info('[WATCHDOG] Repeatable scheduler job re-registered.');
           }
           return { action: 'repeatable_job_missing', success: true, message: 'Repeatable job re-registered.' };
         }
@@ -243,14 +242,14 @@ export class RecoveryEngine {
         case 'heartbeat_stale': {
           const queue = this.getSchedulerQueue();
           if (queue) {
-            await queue.add('scheduler:tick:recovery', {}, { removeOnComplete: 5, removeOnFail: 5 });
-            logger.info('[RECOVERY] Immediate recovery tick enqueued (worker alive but idle).');
+            await queue.add('scheduler:tick:watchdog', {}, { removeOnComplete: 5, removeOnFail: 5 });
+            logger.info('[WATCHDOG] Immediate healing tick enqueued (worker alive but idle).');
           }
-          return { action: 'heartbeat_stale', success: true, message: 'Recovery tick enqueued.' };
+          return { action: 'heartbeat_stale', success: true, message: 'Healing tick enqueued.' };
         }
       }
     } catch (err) {
-      logger.error('[RECOVERY] Recovery action failed', {
+      logger.error('[WATCHDOG] Self-healing action failed', {
         verdict: report.verdict,
         error:   (err as Error).message,
       });
@@ -260,7 +259,7 @@ export class RecoveryEngine {
     return { action: 'healthy', success: true, message: 'No action taken.' };
   }
 
-  // ─── Watchdog ────────────────────────────────────────────────────
+  // ─── Watchdog Loop ───────────────────────────────────────────────
 
   /**
    * Start the stall watchdog. Fires at 1.5× the scheduler interval to
@@ -270,7 +269,7 @@ export class RecoveryEngine {
     if (this.watchdogTimer) return; // already running
 
     const watchdogIntervalMs = this.schedIntervalMs * 1.5;
-    logger.info('[RECOVERY] Watchdog started', {
+    logger.info('[WATCHDOG] Watchdog started', {
       checkIntervalMs: watchdogIntervalMs,
       tickStaleAfterMs: TICK_STALE_MS,
     });
@@ -280,14 +279,14 @@ export class RecoveryEngine {
         const report = await this.runDiagnostics();
         if (report.verdict === 'healthy') return; // All good — no log noise
 
-        const result = await this.recoverScheduler();
-        logger.warn('[RECOVERY] Watchdog triggered recovery', {
+        const result = await this.healScheduler();
+        logger.warn('[WATCHDOG] Watchdog triggered healing', {
           verdict: report.verdict,
           action:  result.action,
           success: result.success,
         });
       } catch (err) {
-        logger.error('[RECOVERY] Watchdog internal error', { error: (err as Error).message });
+        logger.error('[WATCHDOG] Watchdog internal error', { error: (err as Error).message });
       }
     }, watchdogIntervalMs);
   }
@@ -296,7 +295,7 @@ export class RecoveryEngine {
     if (this.watchdogTimer) {
       clearInterval(this.watchdogTimer);
       this.watchdogTimer = null;
-      logger.info('[RECOVERY] Watchdog stopped');
+      logger.info('[WATCHDOG] Watchdog stopped');
     }
   }
 
@@ -309,12 +308,12 @@ export class RecoveryEngine {
 }
 
 // Singleton instance, initialized by schedulerQueue.ts
-let recoveryEngine: RecoveryEngine | null = null;
+let workerWatchdog: WorkerWatchdog | null = null;
 
-export function setRecoveryEngine(engine: RecoveryEngine): void {
-  recoveryEngine = engine;
+export function setWorkerWatchdog(watchdog: WorkerWatchdog): void {
+  workerWatchdog = watchdog;
 }
 
-export function getRecoveryEngine(): RecoveryEngine | null {
-  return recoveryEngine;
+export function getWorkerWatchdog(): WorkerWatchdog | null {
+  return workerWatchdog;
 }

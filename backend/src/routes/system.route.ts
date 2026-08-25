@@ -19,10 +19,10 @@ import {
   getHeartbeat,
   getHeartbeatAgeMs,
   getLastSchedulerTick,
-  getRecoveryCount,
+  getWatchdogAttempts,
   getInfraStatus,
 } from '../queues/infraState';
-import { getRecoveryEngine } from '../queues/recoveryEngine';
+import { getWorkerWatchdog } from '../queues/workerWatchdog';
 import { getSchedulerQueue } from '../queues/schedulerQueue';
 
 const router = Router();
@@ -59,9 +59,9 @@ router.get('/health', async (req: Request, res: Response) => {
       ? Date.now() - new Date(lastTick).getTime()
       : null;
 
-    // 4. Recovery state
-    const [recoveryCount, infraStatus] = await Promise.all([
-      getRecoveryCount(),
+    // 4. Watchdog state
+    const [watchdogAttempts, infraStatus] = await Promise.all([
+      getWatchdogAttempts(),
       getInfraStatus(),
     ]);
 
@@ -88,12 +88,12 @@ router.get('/health', async (req: Request, res: Response) => {
       } catch { /* ignore */ }
     }
 
-    // 6. Recovery engine diagnostics (if available)
-    const engine = getRecoveryEngine();
+    // 6. Worker watchdog diagnostics (if available)
+    const watchdog = getWorkerWatchdog();
     let diagnostics = null;
-    if (engine && redisHealthy) {
+    if (watchdog && redisHealthy) {
       try {
-        diagnostics = await engine.getDiagnosticReport();
+        diagnostics = await watchdog.getDiagnosticReport();
       } catch { /* ignore */ }
     }
 
@@ -107,7 +107,7 @@ router.get('/health', async (req: Request, res: Response) => {
     let overallStatus: 'HEALTHY' | 'DEGRADED' | 'UNHEALTHY';
     if (!redisHealthy || schedulerDead || infraStatus === 'UNHEALTHY') {
       overallStatus = 'UNHEALTHY';
-    } else if (schedulerStale || infraStatus === 'DEGRADED' || recoveryCount > 0) {
+    } else if (schedulerStale || infraStatus === 'DEGRADED' || watchdogAttempts > 0) {
       overallStatus = 'DEGRADED';
     } else {
       overallStatus = 'HEALTHY';
@@ -133,7 +133,8 @@ router.get('/health', async (req: Request, res: Response) => {
         lastTick,
         lastTickAgeMs,
         queueDepths,
-        recoveryCount,
+        watchdogAttempts,
+        recoveryCount: watchdogAttempts,
         infraStatus,
       },
       diagnostics,
@@ -147,16 +148,16 @@ router.get('/health', async (req: Request, res: Response) => {
 // ─── POST /api/system/recover ──────────────────────────────────────
 router.post('/recover', async (req: Request, res: Response) => {
   try {
-    const engine = getRecoveryEngine();
-    if (!engine) {
-      return res.status(503).json({ error: 'Recovery engine not initialized' });
+    const watchdog = getWorkerWatchdog();
+    if (!watchdog) {
+      return res.status(503).json({ error: 'Worker watchdog not initialized' });
     }
-    const result = await engine.recoverScheduler();
-    logger.info('[SYSTEM] Manual recovery triggered', { result });
+    const result = await watchdog.healScheduler();
+    logger.info('[SYSTEM] Manual healing triggered', { result });
     return res.json({ success: result.success, action: result.action, message: result.message });
   } catch (err) {
-    logger.error('[SYSTEM] Manual recovery failed', { error: (err as Error).message });
-    return res.status(500).json({ error: 'Recovery failed', details: (err as Error).message });
+    logger.error('[SYSTEM] Manual healing failed', { error: (err as Error).message });
+    return res.status(500).json({ error: 'Healing failed', details: (err as Error).message });
   }
 });
 
