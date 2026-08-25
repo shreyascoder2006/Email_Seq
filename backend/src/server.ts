@@ -19,6 +19,8 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { ensureDevUser } from './models/User';
 import apiRouter from './routes';
 import trackingRouter from './routes/tracking.route';
+// ⚠️  MUST be imported before express.json() is applied — see comment in the file.
+import razorpayWebhookRouter from './routes/razorpayWebhook.route';
 import logger from './config/logger';
 
 // ─── Helpers (hoisted — used in app.use(helmet) below) ────────────
@@ -63,6 +65,11 @@ app.use(
 );
 
 // ─── General middleware ────────────────────────────────────────────
+// ⚠️  The Razorpay webhook route MUST be mounted BEFORE express.json().
+//    express.raw() inside that router captures the Buffer needed for HMAC
+//    verification.  If express.json() runs first the raw body is gone.
+app.use(razorpayWebhookRouter);
+
 app.use(compression());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));

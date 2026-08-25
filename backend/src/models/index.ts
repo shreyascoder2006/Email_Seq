@@ -20,6 +20,16 @@ export {
   PurchasedPlan,
 }                                             from './Payment';
 
+export { RecoveryCase }                        from './RecoveryCase';
+export type { IRecoveryCase }                  from './RecoveryCase';
+export {
+  RecoveryCaseType,
+  RecoveryCaseStatus,
+}                                              from './RecoveryCase';
+
+export { WebhookEvent }                        from './WebhookEvent';
+export type { IWebhookEvent }                  from './WebhookEvent';
+
 // ─── Domain models ────────────────────────────────────────────────
 
 export { EmailConnection }   from './EmailConnection';
