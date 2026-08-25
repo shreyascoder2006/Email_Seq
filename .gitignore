@@ -47,3 +47,11 @@ coverage/
 .cache/
 tmp/
 temp/
+scratch/
+*.rdb
+dump.rdb
+*.tar.gz
+deploy_bundle.tar.gz
+deploy_remote*.cjs
+deploy_remote*.js
+memurai-log.txt

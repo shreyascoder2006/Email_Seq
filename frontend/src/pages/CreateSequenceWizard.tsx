@@ -41,11 +41,29 @@ export const CreateSequenceWizard: React.FC = () => {
   const { user } = useAuthStore();
 
   const getDefaultTimezone = () => {
-    // Priority: User profile -> Signup country -> Browser fallback
     if (user && (user as any).timezone) return (user as any).timezone;
-    // In a real app, you might map country to timezone or have a country-specific default
-    // We fall back to browser timezone
     return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  };
+
+  const getDefaultTimeWindow = () => {
+    const now = new Date();
+    const totalMinutes = now.getHours() * 60 + now.getMinutes();
+    // Round up to next 30-min boundary
+    const rounded = Math.ceil(totalMinutes / 30) * 30;
+    const startH = Math.floor(rounded / 60);
+    const startM = rounded % 60;
+    // If it's very late (past 23:00), fall back to 9:00
+    if (startH >= 23) {
+      return { start_time_str: '9:00', end_time_str: '10:00' };
+    }
+    const endTotal = rounded + 60; // 1-hour window for this wizard
+    const endH = Math.floor(endTotal / 60);
+    const endM = endTotal % 60;
+    const pad = (m: number) => m.toString().padStart(2, '0');
+    return {
+      start_time_str: `${startH}:${pad(startM)}`,
+      end_time_str:   `${endH}:${pad(endM)}`,
+    };
   };
 
   const { register, control, handleSubmit, watch, setValue, formState: { errors } } = useForm<WizardData>({
@@ -54,8 +72,8 @@ export const CreateSequenceWizard: React.FC = () => {
       name: '',
       sending_preference: 'immediate',
       timezone: getDefaultTimezone(),
-      start_time_str: '9:00',
-      end_time_str: '17:00',
+      // Auto-detected from browser's current local time (next 30-min boundary → +1h)
+      ...getDefaultTimeWindow(),
       custom_days: [1, 2, 3, 4, 5], // MON-FRI
       daily_sending_limit: 200,
       launch_date: new Date().toISOString().split('T')[0],
@@ -178,12 +196,13 @@ export const CreateSequenceWizard: React.FC = () => {
   };
 
   const handleClearAll = () => {
+    const { start_time_str, end_time_str } = getDefaultTimeWindow();
     setValue('name', '');
     setValue('sending_preference', 'immediate');
     setValue('launch_date', new Date().toISOString().split('T')[0]);
     setValue('timezone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
-    setValue('start_time_str', '9:00');
-    setValue('end_time_str', '17:00');
+    setValue('start_time_str', start_time_str);
+    setValue('end_time_str', end_time_str);
     setValue('custom_days', [1, 2, 3, 4, 5]);
     setValue('daily_sending_limit', 200);
   };

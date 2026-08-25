@@ -585,7 +585,9 @@ export class SequenceService {
 
     // Validate referenced resources for email steps
     if (dto.type === StepType.EMAIL) {
-      await assertTemplateValid(userId, dto.template_id);
+      if (dto.template_id) {
+        await assertTemplateValid(userId, dto.template_id);
+      }
       if ((dto as any).email_connection_id) {
         await assertEmailConnectionValid(userId, (dto as any).email_connection_id);
       } else if (!seq.email_connection_id) {
@@ -612,7 +614,7 @@ export class SequenceService {
     };
 
     if (dto.type === StepType.EMAIL) {
-      stepData.template_id          = new Types.ObjectId(dto.template_id);
+      stepData.template_id          = dto.template_id ? new Types.ObjectId(dto.template_id) : undefined;
       stepData.email_connection_id  = (dto as any).email_connection_id
         ? new Types.ObjectId((dto as any).email_connection_id)
         : undefined;
@@ -853,9 +855,9 @@ export class SequenceService {
       expectedIndex++;
 
       if (step.type === StepType.EMAIL) {
-        if (!step.template_id) {
+        if (!step.template_id && !step.subject_override && !step.body_html_override) {
           stepIssues.push('missing_template_id');
-        } else if (!activeTemplates.has(step.template_id.toString())) {
+        } else if (step.template_id && !activeTemplates.has(step.template_id.toString())) {
           stepIssues.push('missing_template_reference'); // Not found or archived
         }
 

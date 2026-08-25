@@ -50,10 +50,11 @@ export const EmailAccountModal: React.FC<EmailAccountModalProps> = ({
   prefillData,
 }) => {
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
+  const [useSameCredentialsForImap, setUseSameCredentialsForImap] = useState(true);
   const [activeTab, setActiveTab] = useState<'basic' | 'smtp' | 'imap'>('basic');
   const isEditing = !!initialData;
 
-  const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<FormData>({
+  const { register, handleSubmit, reset, watch, setValue, formState: { errors, isSubmitting } } = useForm<FormData>({
     resolver: zodResolver(accountSchema),
     defaultValues: {
       smtp_port: 587,
@@ -65,6 +66,9 @@ export const EmailAccountModal: React.FC<EmailAccountModalProps> = ({
       min_interval_seconds: 60,
     }
   });
+
+  const smtpHost = watch('smtp_host');
+  const isGoogle = smtpHost?.toLowerCase().includes('gmail') || smtpHost?.toLowerCase().includes('google');
 
   useEffect(() => {
     if (isOpen) {
@@ -78,6 +82,7 @@ export const EmailAccountModal: React.FC<EmailAccountModalProps> = ({
           imap_host: initialData.imap_host || '',
           imap_username: initialData.imap_username || '',
         });
+        setUseSameCredentialsForImap(false);
       } else {
         // Create mode: apply provider defaults if provided, otherwise use blank defaults
         reset({
@@ -99,6 +104,7 @@ export const EmailAccountModal: React.FC<EmailAccountModalProps> = ({
           hourly_limit: 50,
           min_interval_seconds: 60,
         });
+        setUseSameCredentialsForImap(true);
       }
       setActiveTab('basic');
       setIsAdvancedOpen(false);
@@ -128,16 +134,36 @@ export const EmailAccountModal: React.FC<EmailAccountModalProps> = ({
       return;
     }
     
-    // Clean up empty IMAP values before sending
     const payload: any = { ...data };
     if (!payload.reply_to) delete payload.reply_to;
-    if (!payload.imap_host) {
+
+    // Clean and strip whitespace from passwords and usernames
+    if (payload.smtp_username) payload.smtp_username = payload.smtp_username.trim();
+    if (payload.smtp_password) payload.smtp_password = payload.smtp_password.replace(/\s+/g, '');
+    if (payload.from_email) payload.from_email = payload.from_email.trim().toLowerCase();
+
+    // Auto-mirror credentials to IMAP if toggle is checked
+    if (useSameCredentialsForImap && payload.smtp_username && payload.smtp_password && payload.imap_host) {
+      payload.imap_username = payload.smtp_username;
+      payload.imap_password = payload.smtp_password;
+    }
+
+    // Clean up empty or incomplete IMAP values before sending
+    if (
+      !payload.imap_host ||
+      !payload.imap_username?.trim() ||
+      (!isEditing && !payload.imap_password)
+    ) {
       delete payload.imap_host;
       delete payload.imap_port;
       delete payload.imap_encryption;
       delete payload.imap_username;
       delete payload.imap_password;
+    } else {
+      if (payload.imap_username) payload.imap_username = payload.imap_username.trim();
+      if (payload.imap_password) payload.imap_password = payload.imap_password.replace(/\s+/g, '');
     }
+
     // Don't send empty passwords on edit
     if (isEditing && !payload.smtp_password) delete payload.smtp_password;
     if (isEditing && !payload.imap_password) delete payload.imap_password;
@@ -156,6 +182,25 @@ export const EmailAccountModal: React.FC<EmailAccountModalProps> = ({
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {/* Google App Password banner */}
+        {isGoogle && (
+          <div className="bg-amber-50 border-b border-amber-200 px-6 py-3 text-xs text-amber-900 flex items-start gap-2">
+            <span className="text-base">💡</span>
+            <div>
+              <strong className="font-semibold">Using Gmail / Google Workspace?</strong> You must use a{' '}
+              <a
+                href="https://myaccount.google.com/apppasswords"
+                target="_blank"
+                rel="noreferrer"
+                className="underline font-bold text-amber-950 hover:text-amber-700"
+              >
+                16-character Google App Password
+              </a>{' '}
+              (requires 2-Step Verification enabled). Normal Google account passwords are not accepted by SMTP.
+            </div>
+          </div>
+        )}
 
         <div className="flex border-b border-gray-200 px-6 pt-2 gap-6 bg-gray-50">
           <button onClick={() => setActiveTab('basic')} className={`pb-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'basic' ? 'border-primary-600 text-primary-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>Basic Info</button>
@@ -181,21 +226,33 @@ export const EmailAccountModal: React.FC<EmailAccountModalProps> = ({
               <div className="space-y-1.5">
                 <label className="block text-sm font-medium text-gray-700">Encryption *</label>
                 <select {...register('smtp_encryption')} className="flex h-10 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500">
-                  <option value="tls">TLS</option>
-                  <option value="ssl">SSL</option>
+                  <option value="tls">TLS (Port 587)</option>
+                  <option value="ssl">SSL (Port 465)</option>
                   <option value="none">None</option>
                 </select>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
-              <Input label="SMTP Username *" {...register('smtp_username')} error={errors.smtp_username?.message} />
-              <Input label={isEditing ? "SMTP Password (leave blank to keep)" : "SMTP Password *"} type="password" {...register('smtp_password')} error={errors.smtp_password?.message} />
+              <Input label="SMTP Username *" placeholder="yourname@gmail.com" {...register('smtp_username')} error={errors.smtp_username?.message} />
+              <Input label={isEditing ? "SMTP Password (leave blank to keep)" : "Google App Password / SMTP Password *"} type="password" placeholder="16-character app password" {...register('smtp_password')} error={errors.smtp_password?.message} />
+            </div>
+            <div className="flex items-center gap-2 pt-2">
+              <input
+                id="same-creds"
+                type="checkbox"
+                checked={useSameCredentialsForImap}
+                onChange={(e) => setUseSameCredentialsForImap(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+              />
+              <label htmlFor="same-creds" className="text-xs text-gray-600">
+                Use same credentials for IMAP (for auto-detecting prospect replies)
+              </label>
             </div>
           </div>
 
           <div className={activeTab === 'imap' ? 'space-y-4' : 'hidden'}>
             <div className="bg-blue-50 text-blue-800 p-3 rounded-lg text-sm mb-4">
-              IMAP is optional but required if you want to automatically stop sequences when a prospect replies.
+              IMAP is optional. If configured, the system automatically checks for replies and stops subsequent sequence emails.
             </div>
             <div className="grid grid-cols-[2fr_1fr_1fr] gap-4">
               <Input label="IMAP Host" placeholder="imap.gmail.com" {...register('imap_host')} error={errors.imap_host?.message} />
@@ -203,15 +260,15 @@ export const EmailAccountModal: React.FC<EmailAccountModalProps> = ({
               <div className="space-y-1.5">
                 <label className="block text-sm font-medium text-gray-700">Encryption</label>
                 <select {...register('imap_encryption')} className="flex h-10 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500">
+                  <option value="ssl">SSL (Port 993)</option>
                   <option value="tls">TLS</option>
-                  <option value="ssl">SSL</option>
                   <option value="none">None</option>
                 </select>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
-              <Input label="IMAP Username" {...register('imap_username')} error={errors.imap_username?.message} />
-              <Input label={isEditing ? "IMAP Password (leave blank to keep)" : "IMAP Password"} type="password" {...register('imap_password')} error={errors.imap_password?.message} />
+              <Input label="IMAP Username" placeholder="yourname@gmail.com" {...register('imap_username')} error={errors.imap_username?.message} />
+              <Input label={isEditing ? "IMAP Password (leave blank to keep)" : "IMAP Password"} type="password" placeholder="Leave empty to use SMTP credentials" {...register('imap_password')} error={errors.imap_password?.message} />
             </div>
           </div>
 

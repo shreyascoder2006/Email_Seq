@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate, useParams } from 'rea
 import { AppLayout } from './layouts/AppLayout';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { Login } from './pages/Login';
+import { LandingPage } from './pages/LandingPage';
 import { Dashboard } from './pages/Dashboard';
 import { Sequences } from './pages/Sequences';
 
@@ -12,6 +13,7 @@ import { EmailAccounts } from './pages/EmailAccounts';
 import { Analytics } from './pages/Analytics';
 import { Settings } from './pages/Settings';
 import { ImportLists } from './pages/ImportLists';
+import { Billing } from './pages/Billing';
 import { SequenceRecipientsStep } from './pages/SequenceRecipientsStep';
 import { SequenceRecipientsManager } from './pages/SequenceRecipientsManager';
 import { SequencePreviewTestPage } from './pages/SequencePreviewTestPage';
@@ -27,6 +29,8 @@ function App() {
     <Router>
       <Routes>
         {/* Public Routes */}
+        <Route path="/" element={<LandingPage />} />
+        <Route path="/landing" element={<LandingPage />} />
         <Route path="/login" element={<Login />} />
 
         {/* Protected Routes */}
@@ -44,6 +48,7 @@ function App() {
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/sequences/:id/analytics" element={<SequenceAnalytics />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/billing" element={<Billing />} />
             <Route path="/import-lists" element={<ImportLists />} />
             
             {/* Fallback to Dashboard */}

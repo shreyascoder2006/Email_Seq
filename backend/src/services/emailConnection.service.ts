@@ -315,10 +315,12 @@ export class EmailConnectionService {
         };
       }
 
+      const isSsl = doc.smtp_encryption === 'ssl' || doc.smtp_port === 465;
+
       const transport = nodemailer.createTransport({
         host: doc.smtp_host,
         port: doc.smtp_port,
-        secure: doc.smtp_encryption === 'ssl',
+        secure: isSsl,
         auth: authConfig,
         tls: {
           rejectUnauthorized: doc.provider !== 'custom',
@@ -332,7 +334,7 @@ export class EmailConnectionService {
 
       return {
         success: true,
-        message: `SMTP connection to ${doc.smtp_host}:${doc.smtp_port} verified`,
+        message: `SMTP connection to ${doc.smtp_host}:${doc.smtp_port} verified successfully`,
         latency_ms: Date.now() - start,
       };
     } catch (err) {
@@ -341,9 +343,17 @@ export class EmailConnectionService {
         host: doc.smtp_host,
         error: error.message,
       });
+
+      let friendlyMessage = error.message;
+      if (error.message.includes('535') || error.message.includes('Username and Password not accepted') || error.message.includes('534')) {
+        friendlyMessage = 'Google Authentication Failed (535): Please ensure you are using a 16-character Google App Password (not your personal account password) and that 2-Step Verification is turned ON.';
+      } else if (error.message.includes('ETIMEDOUT') || error.message.includes('ECONNREFUSED')) {
+        friendlyMessage = `Could not connect to ${doc.smtp_host}:${doc.smtp_port}. Please verify the host and port.`;
+      }
+
       return {
         success: false,
-        message: `SMTP failed: ${error.message}`,
+        message: friendlyMessage,
         latency_ms: Date.now() - start,
       };
     }

@@ -68,6 +68,41 @@ const timeOptions = Array.from({ length: 48 }).map((_, i) => {
   };
 });
 
+/**
+ * Computes a sensible default 30-minute sending window based on
+ * the current local time.
+ *
+ * Logic:
+ *  - Take now, round up to the next :00 or :30 mark.
+ *  - If the result is past 23:00 (or would push end_hour to 24), wrap to
+ *    09:00 (next morning's first business slot).
+ *
+ * Returns { start_time_str, end_time_str } in "H:MM" format.
+ */
+function getDefaultTimeWindow(): { start_time_str: string; end_time_str: string } {
+  const now = new Date();
+  const totalMinutes = now.getHours() * 60 + now.getMinutes();
+  // Round up to next 30-min boundary
+  const rounded = Math.ceil(totalMinutes / 30) * 30;
+  const startH = Math.floor(rounded / 60);
+  const startM = rounded % 60;
+
+  // If rounded time would go past 23:30 (end would be 24:00), fall back to 09:00
+  if (startH >= 24 || (startH === 23 && startM === 30)) {
+    return { start_time_str: '9:00', end_time_str: '9:30' };
+  }
+
+  const endTotal = rounded + 30;
+  const endH = Math.floor(endTotal / 60);
+  const endM = endTotal % 60;
+
+  const pad = (m: number) => m.toString().padStart(2, '0');
+  return {
+    start_time_str: `${startH}:${pad(startM)}`,
+    end_time_str:   `${endH}:${pad(endM)}`,
+  };
+}
+
 // ─── Reusable Field Label ─────────────────────────────────────────────────────
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
@@ -124,9 +159,9 @@ export const CreateSequenceModal: React.FC<CreateSequenceModalProps> = ({ isOpen
       name: '',
       sending_preference: 'immediate',
       timezone: getDefaultTimezone(),
-      // Default window: 3:30 PM – 4:00 PM
-      start_time_str: '15:30',
-      end_time_str: '16:00',
+      // Default window: auto-detected from browser's current local time,
+      // rounded up to the next 30-minute boundary.
+      ...getDefaultTimeWindow(),
       // All 7 days active by default (SUN–SAT)
       custom_days: [0, 1, 2, 3, 4, 5, 6],
       daily_sending_limit: 200,

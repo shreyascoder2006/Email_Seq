@@ -60,11 +60,11 @@ export const CreateEmailConnectionSchema = z.object({
   smtp_password: z.string().optional(),
 
   // ── IMAP (optional) ───────────────────────────────────────────────
-  imap_host:       z.string().trim().max(253).optional(),
+  imap_host:       z.string().trim().max(253).optional().or(z.literal('')).transform((v) => v || undefined),
   imap_port:       portField.optional().default(993),
   imap_encryption: encryptionField.optional().default(SmtpEncryption.SSL),
-  imap_username:   z.string().trim().optional(),
-  imap_password:   z.string().optional(),
+  imap_username:   z.string().trim().optional().or(z.literal('')).transform((v) => v || undefined),
+  imap_password:   z.string().optional().or(z.literal('')).transform((v) => v || undefined),
 
   // ── Sending limits ────────────────────────────────────────────────
   daily_limit: z

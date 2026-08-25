@@ -4,7 +4,24 @@
  * Import from here throughout the app to avoid circular deps.
  */
 
+// ─── Auth / User models ────────────────────────────────────────────
+export { User }                          from './User';
+export type { IUser }                    from './User';
+export { UserRole, UserPlan }            from './User';
+export { ensureDevUser, DEV_USER_ID }    from './User';
+
+// ─── Billing models ────────────────────────────────────────────────
+export { Payment }                            from './Payment';
+export type { IPayment }                      from './Payment';
+export {
+  PaymentProvider,
+  PaymentEnvironment,
+  PaymentStatus,
+  PurchasedPlan,
+}                                             from './Payment';
+
 // ─── Domain models ────────────────────────────────────────────────
+
 export { EmailConnection }   from './EmailConnection';
 export { Template }          from './Template';
 export { Sequence }          from './Sequence';

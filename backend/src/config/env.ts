@@ -79,6 +79,14 @@ const envSchema = z.object({
   // AI / Gemini
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default('gemini-3.6-flash'),
+
+  // ─── Razorpay ─────────────────────────────────────────────────────
+  // RAZORPAY_KEY_SECRET MUST NEVER enter frontend code, API responses, or logs.
+  // RAZORPAY_KEY_ID is the only public-facing credential (safe for Checkout).
+  RAZORPAY_KEY_ID:         z.string().optional(),
+  RAZORPAY_KEY_SECRET:     z.string().optional(),
+  RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
+  RAZORPAY_MODE:           z.enum(['test', 'live']).default('test'),
 });
 
 // ─── Parse & validate ─────────────────────────────────────────────

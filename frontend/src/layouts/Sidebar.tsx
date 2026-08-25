@@ -8,6 +8,7 @@ import {
   BarChart2,
   Settings,
   Upload,
+  CreditCard,
 } from 'lucide-react';
 import { cn } from '../utils/cn';
 
@@ -17,8 +18,9 @@ const navItems = [
   { name: 'Templates',    href: '/templates',     icon: FileText },
   { name: 'Import Lists', href: '/import-lists',  icon: Upload },
   { name: 'Email Accounts', href: '/email-accounts', icon: Mail },
-  { name: 'Analytics',   href: '/analytics',     icon: BarChart2 },
-  { name: 'Settings',    href: '/settings',      icon: Settings },
+  { name: 'Analytics',     href: '/analytics',     icon: BarChart2 },
+  { name: 'Billing',       href: '/billing',       icon: CreditCard },
+  { name: 'Settings',      href: '/settings',      icon: Settings },
 ];
 
 export const Sidebar: React.FC = () => {

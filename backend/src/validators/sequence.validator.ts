@@ -180,7 +180,7 @@ export const ListSequenceQuerySchema = z.object({
 const EmailStepSchema = z.object({
   type: z.literal(StepType.EMAIL),
 
-  template_id: objectIdField.describe('Template to use for this step'),
+  template_id: objectIdField.optional().describe('Template to use for this step (optional if subject & body provided)'),
 
   email_connection_id: objectIdField
     .optional()

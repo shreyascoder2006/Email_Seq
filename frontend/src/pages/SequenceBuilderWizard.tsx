@@ -279,6 +279,13 @@ const ContentTab = forwardRef<ContentTabRef, ContentTabProps>(({ phase, selected
   })();
   const [selectedConnectionId, setSelectedConnectionId] = useState(defaultConnectionId);
 
+  useEffect(() => {
+    if (!selectedConnectionId && connections.length > 0) {
+      const active = connections.find(c => c.status === 'active');
+      setSelectedConnectionId(active ? active._id : connections[0]._id);
+    }
+  }, [connections, selectedConnectionId]);
+
   // AI Generator state
   const [aiObjective, setAiObjective] = useState('First Touch');
   const [aiLength, setAiLength] = useState<EmailLength>('medium');
@@ -310,11 +317,13 @@ const ContentTab = forwardRef<ContentTabRef, ContentTabProps>(({ phase, selected
 
   useImperativeHandle(ref, () => ({
     getStepData: () => {
-      const currentHtml = editorRef.current?.getHTML() || bodyHtml;
+      const editorHtml = editorRef.current?.getHTML();
+      const finalHtml = editorHtml && editorHtml !== '<p></p>' ? editorHtml : (aiGeneratedBodyHtml || bodyHtml);
+      const finalSubject = subject || aiGeneratedSubject || '';
       return {
-        email_connection_id: selectedConnectionId,
-        subject_override: subject,
-        body_html_override: currentHtml,
+        email_connection_id: selectedConnectionId || undefined,
+        subject_override: finalSubject || undefined,
+        body_html_override: finalHtml || undefined,
         cc: ccInput ? ccInput.split(/[,;]+/).map(e => e.trim()).filter(Boolean) : undefined,
         bcc: bccInput ? bccInput.split(/[,;]+/).map(e => e.trim()).filter(Boolean) : undefined,
       };
@@ -943,31 +952,30 @@ export const SequenceBuilderWizard: React.FC = () => {
     if (!sequence) return;
     try {
       if (steps.length === 0) {
-        // Create the first step and refresh
-        await sequenceService.addStep(sequence._id, {
+        // Create the first step and update local state
+        const newStep = await sequenceService.addStep(sequence._id, {
           type: 'email',
           delay_days: 0,
           delay_hours: 0,
           template_id: selectedTemplateId || undefined,
           ...stepData
         });
+        setSteps([newStep]);
       } else {
         // Update existing step in place
         const currentStep = phases[selectedPhaseIdx]?.step;
         if (currentStep) {
-          await sequenceService.updateStep(sequence._id, currentStep._id, {
+          const updated = await sequenceService.updateStep(sequence._id, currentStep._id, {
             type: 'email',
             template_id: selectedTemplateId || undefined,
             ...stepData
           });
+          setSteps(prev => prev.map(s => s._id === currentStep._id ? updated : s));
         }
       }
       toast.success('Step saved');
-      // Do NOT call fetchData() here — it sets isLoading=true which unmounts ContentTab
-      // and causes a remount with stale initial state. The API call already persisted the
-      // data; the editor's local state already reflects the user's edits.
-    } catch (err) {
-      toast.error('Failed to save step');
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || err.response?.data?.error?.message || 'Failed to save step');
     }
   };
 
@@ -997,8 +1005,8 @@ export const SequenceBuilderWizard: React.FC = () => {
         }
       }
       navigate(`/sequences/${sequence._id}/recipients`);
-    } catch (err) {
-      toast.error('Failed to save sequence step');
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || err.response?.data?.error?.message || 'Failed to save sequence step');
     } finally {
       setIsLoading(false);
     }

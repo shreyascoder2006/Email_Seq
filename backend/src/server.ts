@@ -16,6 +16,7 @@ import { startImapPoller, stopImapPoller } from './queues/imapPollerQueue';
 import { requestLogger } from './middleware/requestLogger';
 import { apiRateLimiter } from './middleware/rateLimiter';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
+import { ensureDevUser } from './models/User';
 import apiRouter from './routes';
 import trackingRouter from './routes/tracking.route';
 import logger from './config/logger';
@@ -31,6 +32,9 @@ function generateRequestId(): string {
 
 // ─── Create Express app ────────────────────────────────────────────
 const app: Application = express();
+
+// Trust reverse proxy (Nginx) headers for accurate client IP and rate-limiting
+app.set('trust proxy', 1);
 
 // ─── Security middleware ───────────────────────────────────────────
 app.use(
@@ -157,6 +161,12 @@ async function bootstrap(): Promise<void> {
   await connectDB();
   await connectRedis();
 
+  // ─── Dev user compatibility ─────────────────────────────────────
+  // Ensures the hardcoded mock-auth dev user (507f1f77bcf86cd799439011)
+  // has a User document with plan='free' before any billing endpoint
+  // can reference it. No-op in production. Does not modify auth logic.
+  await ensureDevUser();
+
   // Verify SMTP (non-blocking — warns but doesn't crash)
   createMailTransporter();
   verifyMailConnection(); // fire-and-forget
@@ -187,3 +197,4 @@ bootstrap().catch((err) => {
 });
 
 export { app };
+

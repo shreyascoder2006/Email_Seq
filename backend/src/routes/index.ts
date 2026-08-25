@@ -11,6 +11,7 @@ import oauthRouter         from './oauth.route';
 import systemRouter        from './system.route';
 import aiRouter            from './ai.route';
 import redisDiagRouter     from './redis-diagnostics.route';
+import paymentRouter       from './payment.route';
 
 const router = Router();
 
@@ -26,6 +27,7 @@ router.use('/analytics',      analyticsRouter);
 router.use('/ai',             aiRouter);
 router.use('/oauth',          oauthRouter);
 router.use('/system',         systemRouter);
+router.use('/payments',       paymentRouter);
 // Development diagnostics — unauthenticated for easy curl access
 router.use('/system/redis-diagnostics', redisDiagRouter);
 
