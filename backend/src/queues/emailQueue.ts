@@ -446,7 +446,9 @@ export async function processEmailSend(job: Job): Promise<void> {
       step_index:          stepIndex,
       original_url:        link.originalUrl,
       tracking_id:         link.trackingId,
-      is_first_click:      true,
+      // is_first_click starts false; trackClick() flips it to true on the first
+      // actual click so analytics can safely filter { is_first_click: true }.
+      is_first_click:      false,
       click_count:         0,
     }));
     await ClickLog.insertMany(clickLogsToInsert, { lean: false });

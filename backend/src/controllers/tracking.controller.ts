@@ -123,13 +123,17 @@ export async function trackClick(req: Request, res: Response, next: NextFunction
     // Process update asynchronously
     setImmediate(async () => {
       try {
-        const isFirstClick = clickLog.click_count === 0;
+        // is_first_click starts false at pre-creation; true means "has been clicked".
+        const isFirstClick = !clickLog.is_first_click;
 
         await ClickLog.updateOne(
           { _id: clickLog._id },
           {
             $set: {
-              is_first_click: false,
+              // Mark as first-clicked so analytics { is_first_click: true } works.
+              is_first_click: true,
+              // Record the actual click time (pre-creation default would be wrong).
+              clicked_at: new Date(),
               user_agent: userAgent,
               ip_address: ip as string,
             },

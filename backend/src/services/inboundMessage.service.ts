@@ -48,9 +48,12 @@ export class InboundMessageService {
     }
 
     const cleanMessageId = originalMessageIdMatch[1].replace(/[<>]/g, '');
+    // SendingLog stores message_id WITH angle brackets (e.g. "<uuid@domain>").
+    // Reconstruct the exact bracketed form so the sparse index is used correctly
+    // rather than a $regex scan that could partially match the wrong document.
     const sendingLog = await SendingLog.findOne({
       email_connection_id: connectionId,
-      message_id: { $regex: new RegExp(cleanMessageId, 'i') },
+      message_id: `<${cleanMessageId}>`,
     });
 
     if (!sendingLog) {
@@ -126,10 +129,11 @@ export class InboundMessageService {
     envelope: any
   ): Promise<'reply' | 'ignored'> {
     const cleanInReplyTo = envelope.inReplyTo.replace(/[<>]/g, '');
-    
+    // SendingLog stores message_id WITH angle brackets — use an exact match
+    // so the sparse index is used and there is no risk of partial collisions.
     const sendingLog = await SendingLog.findOne({
       email_connection_id: connectionId,
-      message_id: { $regex: new RegExp(cleanInReplyTo, 'i') },
+      message_id: `<${cleanInReplyTo}>`,
     });
 
     if (!sendingLog) return 'ignored';

@@ -103,6 +103,30 @@ if (!_parsed.success) {
 
 export const env = _parsed.data;
 
+// ─── APP_BASE_URL reachability guard ──────────────────────────────
+// Tracking pixel, click-redirect, and unsubscribe URLs are all built from
+// APP_BASE_URL. If it resolves to localhost the URLs will be unreachable
+// from recipients' mail clients and all event tracking will silently fail.
+const _isLocalhostUrl = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/?$/.test(env.APP_BASE_URL);
+if (_isLocalhostUrl) {
+  if (env.NODE_ENV === 'production') {
+    console.error(
+      '\n❌  FATAL: APP_BASE_URL is set to a localhost address in production.\n' +
+      '   Tracking pixel, click-redirect, and unsubscribe URLs embedded in\n' +
+      '   sent emails will be unreachable from recipient mail clients.\n' +
+      `   Current value: ${env.APP_BASE_URL}\n` +
+      '   Set APP_BASE_URL to your publicly reachable server URL in .env\n'
+    );
+    process.exit(1);
+  } else {
+    console.warn(
+      `\n⚠️   APP_BASE_URL is set to "${env.APP_BASE_URL}" (localhost).\n` +
+      '   Tracking pixel and click-redirect URLs will not be reachable from\n' +
+      '   external mail clients. Set APP_BASE_URL in .env for real tracking.\n'
+    );
+  }
+}
+
 // ─── Derived helpers ──────────────────────────────────────────────
 export const isDev = env.NODE_ENV === 'development';
 export const isProd = env.NODE_ENV === 'production';
